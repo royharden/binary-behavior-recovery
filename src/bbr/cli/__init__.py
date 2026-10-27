@@ -9,7 +9,8 @@ from typing import Sequence
 
 from bbr.report import ReportError, verify_report
 from bbr.report.archive import BANNER
-from .journey import corpus_build, corpus_gate, evidence, fixture_preflight, replay_retained
+from .journey import (corpus_build, corpus_gate, evidence, fixture_preflight,
+                      ledger_report, replay_retained)
 
 
 def parser() -> argparse.ArgumentParser:
@@ -65,13 +66,7 @@ def main(argv: Sequence[str] | None = None) -> int:
             else:
                 output, code = fixture_preflight(args.config, getattr(args, "arm", "P"))
         else:
-            # Ledger.__init__ initializes/writes even for report(). Do not call it
-            # from a read command, create a database or duplicate its accounting.
-            from bbr.report.archive import safe_file
-            safe_file(args.database.parent, args.database.name)
-            output, code = ({"status": "unavailable", "command": "ledger report",
-                "reason": "Read-only Ledger report producer seam required; database was not opened or modified.",
-                "runtime_validation": "unverified"}, 2)
+            output, code = ledger_report(args.database)
     except ImportError as error:
         output, code = ({"status": "unavailable", "reason": "Required producer module is not integrated.",
                          "module": error.name, "runtime_validation": "unverified"}, 2)

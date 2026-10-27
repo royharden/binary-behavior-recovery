@@ -79,9 +79,16 @@ def _extract(path: Path, expected_sha256: str):
 
 
 def evidence(path: Path, expected_sha256: str) -> tuple[dict, int]:
+    from bbr.evidence import PublicEvidenceEnvelope
+
     bundle = _extract(path, expected_sha256)
+    envelope = PublicEvidenceEnvelope.from_bundle(bundle,
+        expected_artifact_sha256=expected_sha256)
+    envelope.validate_for(artifact_sha256=expected_sha256, evidence_sha256=bundle.digest())
     return {"status": "static_evidence_extracted", "evidence_sha256": bundle.digest(),
-            "evidence": bundle.to_dict(), "evidence_bytes": len(bundle.canonical_json()),
+            "public_evidence": envelope.to_dict(),
+            "evidence_bytes": len(bundle.canonical_json()),
+            "envelope_bytes": len(envelope.canonical_json()),
             "fresh_execution": False, "runtime_validation": "unverified"}, 0
 
 
@@ -103,6 +110,20 @@ def replay_retained(path: Path, expected_record_sha256: str) -> tuple[dict, int]
             "reason": "No independently admitted isolated worker backend is configured."}, 2
 
 
+def ledger_report(path: Path) -> tuple[dict, int]:
+    """Delegate accounting and the 64 MiB existing-DB bound to its sole producer."""
+    import sqlite3
+    from bbr.ledger import BudgetStop, read_report
+
+    try:
+        snapshot = read_report(path)
+    except (BudgetStop, sqlite3.Error, OSError, ValueError) as error:
+        return {"status": "refused", "command": "ledger report", "reason": str(error),
+                "runtime_validation": "unverified"}, 2
+    return {"status": "retained_ledger_snapshot", "ledger": snapshot,
+            "read_only": True, "runtime_validation": "unverified"}, 0
+
+
 def fixture_preflight(config_path: Path, arm: str) -> tuple[dict, int]:
     """Trace public source inputs and real fail-closed worker ports.
 
@@ -111,6 +132,7 @@ def fixture_preflight(config_path: Path, arm: str) -> tuple[dict, int]:
     Config data cannot nominate a Python module, backend or executable callback.
     """
     from bbr.contracts import ExecutionLimits, VisibleTask
+    from bbr.evidence import PublicEvidenceEnvelope
     from bbr.runner import CandidateValidator, Runner, SandboxPolicy
 
     raw = _closed(_json(config_path), {"schema", "origin", "artifact", "artifact_sha256",
@@ -126,6 +148,10 @@ def fixture_preflight(config_path: Path, arm: str) -> tuple[dict, int]:
     task = VisibleTask.model_validate_json(canonical(raw["visible_task"]))
     if task.evidence_sha256 != bundle.digest():
         raise ValueError("visible task does not bind full canonical evidence")
+    envelope = PublicEvidenceEnvelope.from_bundle(bundle,
+        expected_artifact_sha256=raw["artifact_sha256"])
+    envelope.validate_for(artifact_sha256=raw["artifact_sha256"],
+                          evidence_sha256=task.evidence_sha256)
     limits = ExecutionLimits.model_validate_json(canonical(raw["limits"]))
     oracle_policy = SandboxPolicy(raw["image_sha256"], raw["toolchain_sha256"], worker_kind="oracle")
     candidate_policy = SandboxPolicy(raw["image_sha256"], raw["toolchain_sha256"], worker_kind="candidate")
@@ -141,6 +167,8 @@ def fixture_preflight(config_path: Path, arm: str) -> tuple[dict, int]:
     return {"status": "preflight_blocked", "origin": "fixture", "arm": arm,
             "live_status": "not_run", "runtime_validation": "unverified",
             "evidence_sha256": bundle.digest(), "evidence_bytes": len(bundle.canonical_json()),
+            "public_evidence": envelope.to_dict(),
+            "envelope_bytes": len(envelope.canonical_json()),
             "visible_task_id": task.task_id, "visible_pairs": len(task.examples),
             "public_probe_inputs": len(task.probe_inputs),
             "candidate_validation": {"valid": valid, "diagnostic": diagnostic,
@@ -149,6 +177,6 @@ def fixture_preflight(config_path: Path, arm: str) -> tuple[dict, int]:
             "provider_module_integrated": provider_present, "provider_dispatched": False,
             "pending": ["independent admission and custody authenticity",
                 "admitted isolated candidate/oracle backends",
-                "full closed evidence-content provider envelope (SEAM-003)",
+                "accepted provider consumer of full closed evidence envelope",
                 "verified pre-dispatch leak/token controls"],
             "reason": "No request, binary or candidate execution was initiated."}, 2

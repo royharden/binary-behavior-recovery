@@ -16,18 +16,31 @@ not compile. Supply an actual `ToolchainPin` JSON object; no versions or pins ar
 invented. Gate accepts a closed `bbr.instance-receipts.v1` object with `spec`,
 `artifacts` and `receipts`, uses `validate_instance`, and labels its result as
 retained consistency rather than authentic independent admission. Evidence reads
-the expected-hash artifact, then returns the full canonical `EvidenceBundle`, its
-digest and byte count, preserving section bytes and unknown-boundary notices.
+the expected-hash artifact, then constructs the actual producer's
+`PublicEvidenceEnvelope.from_bundle` and validates artifact and bundle identities.
+The `public_evidence` output contains the full canonical `EvidenceBundle`, preserving
+section bytes and unknown-boundary notices. `evidence_sha256` is the bundle digest,
+not the envelope digest; both byte counts are explicit. Missing/unaccepted producer
+source returns unavailable rather than a substitute envelope.
 
 Replay requires a record digest from a separately trusted manifest. It uses the
 producer's record/path/hash/comparator checks and returns retained consistency
 with exit 2 because no admitted isolated backend is configured for fresh execution.
-Ledger reporting refuses without a read-only producer API and opens no database.
+Ledger reporting delegates to the actual `bbr.ledger.read_report(path)` producer:
+existing database only, 64 MiB producer bound, read-only SQLite URI/query-only
+snapshot. The CLI does not construct `Ledger`, initialize storage, duplicate SQL
+accounting, settle charges or substitute an empty report for failure. Missing API
+is unavailable; missing/schema/SQLite/BudgetStop errors return explicit refusal.
+Output labels a successful read as a retained ledger snapshot with runtime still
+unverified. Builders have not opened a database to validate this source.
 
 Run and demo use closed `bbr.fixture-preflight.v1` configuration: `schema`, `origin`
 (`fixture` only), relative `artifact`, `artifact_sha256`, `visible_task`, inert
 `candidate_source`, `image_sha256`, `toolchain_sha256` and `limits`. All supplied
 objects use producer contracts. The full evidence digest must match VisibleTask.
+Preflight constructs and validates the same producer `PublicEvidenceEnvelope` as
+extraction, retaining full inert content for the owned provider consumer. Structural
+checks do not prove ELF provenance, token budgets or semantic/canary leak absence.
 The actual validator with no backend returns `None` (infrastructure unknown),
 while the actual runner with no backend retains its infrastructure observation.
 Neither binary nor candidate executes. Preflight exits 2 before provider dispatch,
