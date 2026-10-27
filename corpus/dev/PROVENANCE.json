@@ -1,0 +1,24 @@
+{
+  "author": "0934_Codex_gpt-61-sol_Sub_M15Corpus",
+  "created": "2026-10-27",
+  "origin": "original_builder_authored_dev",
+  "rights_status": "pending_Roy",
+  "license": null,
+  "independent_reference_status": "pending",
+  "runtime_validation": "not_run",
+  "files": {
+    "src/bbr/corpus/__init__.py": "079eb2422e0580df9a782178477f791a98c6152a2cf17ba402ec25e9b0b6343f",
+    "src/bbr/corpus/codecs.py": "432cb12929260cbe211d814f9fcfce0fb4e1f4fb52bd336dcc0e3c3c2366d511",
+    "src/bbr/corpus/families.py": "34dadeb31271818aa5b234dd6db77ae6d2f80007594397d4a80c49e747b83353",
+    "src/bbr/corpus/render.py": "8f2904c31c5ead150aa8b39750e26f40666c9f9b20e9027487c25960a72df9a7",
+    "src/bbr/corpus/spec.py": "88bf62dc7ef6d0fa20ad9fd819712f061cc2ba40e767facb4c71fbae5688c06d",
+    "corpus/dev/delta-state.yaml": "27e8dc45ad30036f4de5cb4fa702790791aba869f4415907ff41c4684ae8f2b7",
+    "corpus/dev/escape-four.yaml": "c001a0659d41ad37dec199498e105e70bb549086b9d24f77a6ecdab9a735f388",
+    "corpus/dev/nibble-exchange.yaml": "1d8ac936de92fac4e1671ba6e384e7e3aa575bffcbaa3dac1804ae8eedb40a2b",
+    "corpus/dev/pair-fold.yaml": "7cb3e5eb461d443f543dcd4e1d6b92f29029b45ecc6f3b73b9b533fa5a57fa49",
+    "corpus/dev/rolling-four.yaml": "282de3c97f66d862d4497d46863843b6f57d0acce6145338896844bb55c53b57",
+    "corpus/dev/runs-four.yaml": "433f9714c54a0f87060e1ffcdf4d0638a6c3e828e3abb4673640e98b77ee58a7",
+    "corpus/dev/sort-three.yaml": "699e0c80b7744347eb145a27ef4d90e8f22b3ccbf96b66ef4e4c080dc14beb94",
+    "corpus/dev/threshold-byte.yaml": "43b5053c8be15e622ea072fb71c7f3d78f030a29ec97d07b0f25d1c2b22fe8cc"
+  }
+}
