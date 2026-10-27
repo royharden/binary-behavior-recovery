@@ -15,16 +15,28 @@ def _closed(value: dict, fields: set[str]) -> None:
 def _observation(raw: dict) -> tuple[bool, bool]:
     _closed(raw, {"stdout_hex", "exit_code", "signal", "timed_out", "output_limited", "status"})
     canonical_hex(raw["stdout_hex"], 4096)
-    if raw["exit_code"] is not None and type(raw["exit_code"]) is not int:
-        raise ValueError("numeric exit required")
-    if raw["signal"] is not None and type(raw["signal"]) is not int:
-        raise ValueError("numeric signal required")
+    if raw["exit_code"] is not None and (type(raw["exit_code"]) is not int or not 0 <= raw["exit_code"] <= 255):
+        raise ValueError("exit must be an integer from 0 through 255")
+    if raw["signal"] is not None and (type(raw["signal"]) is not int or raw["signal"] <= 0):
+        raise ValueError("signal must be a positive integer")
+    if raw["exit_code"] is not None and raw["signal"] is not None:
+        raise ValueError("exit and signal are mutually exclusive")
     if type(raw["timed_out"]) is not bool or type(raw["output_limited"]) is not bool:
         raise ValueError("boolean resource flags required")
     if not isinstance(raw["status"], str) or raw["status"] not in {"ok", "subject_failure", "infrastructure_error"}:
         raise ValueError("invalid observation status")
-    unknown = raw["status"] == "infrastructure_error"
-    healthy = raw["status"] in {"ok", "subject_failure"} and raw["signal"] is None and not raw["timed_out"] and not raw["output_limited"] and raw["exit_code"] is not None
+    clean = raw["signal"] is None and not raw["timed_out"] and not raw["output_limited"]
+    # These are the comparable fields of the shared Observation contract. Its
+    # diagnostic reason/stderr/elapsed fields stay in the producer archive.
+    if raw["status"] == "ok" and (not clean or raw["exit_code"] != 0):
+        raise ValueError("ok requires clean exit zero")
+    # Match compare_observations: resource faults are known subject failures;
+    # an otherwise unclassified missing exit is an infrastructure unknown.
+    unknown = raw["status"] == "infrastructure_error" or (clean and raw["exit_code"] is None)
+    # A clean subject_failure is comparable only for expected malformed exit 2.
+    # In particular, identical stdout/exit 0 must not erase a subject exception.
+    healthy = clean and ((raw["status"] == "ok" and raw["exit_code"] == 0) or
+                         (raw["status"] == "subject_failure" and raw["exit_code"] == 2))
     return healthy, unknown
 
 

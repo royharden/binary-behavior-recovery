@@ -17,3 +17,19 @@ Missing rows remain in the 96 denominator and make primary estimates/intervals n
 `leakscan.scan_prompt(prompt, canaries, private_inputs)` checks exact canary bytes and private raw/hex/hash encodings without reading files. It is supplementary and can flag short-byte coincidences; independent custody must adjudicate leaks. It rejects empty private inputs because empty substring scans are meaningless. Scan only committed private inputs; visible hashes are not secrets. Semantic leakage and arbitrary encodings are not proved absent.
 
 Deferred K/L checks: hand-computable unequal-group paired matrix; missing/abstain/zero denominators; 2,000 reproducible draws and arm-order invariance; raw/canonical intersections; semantic relabel rejection; concurrent SQLite lock/open attempts; post-lock immutability; mount isolation; rights/receipt authenticity; fixture/live lineage; live model and cost approvals; independent corpus validity/admission. No tests or runtime execution were run for this source increment.
+
+`producer.RetainedCollector(registration, partitions=..., campaign_receipt=...)`
+adapts shared `bbr.contracts.PairOutcome` values using the actual
+`bbr.differential.compare_observations` comparator. `add(task_id, model, arm,
+candidate_sha256=..., stdin_bytes=..., outcome=...)` checks final source identity,
+input hash, comparator status/reason and membership in the frozen scoring pool.
+It rejects duplicate observations and public feedback inputs. `rows()` returns
+detached, ordered scorer rows; `summary()` invokes the sole retained scorer.
+No worker, source import, hidden stream opening or provider port is available to
+the collector. Infrastructure observations keep their unknown status; a missing
+row stays missing, and partial candidate input sets cannot become successful rows.
+The producer bytes/exit/signal/resource fields map directly to score observation
+fields; elapsed/stderr/reason stay in original producer archives, not invented
+statistical equality criteria. Custodian validity must establish decoded canonical
+identities; this adapter consumes their frozen commitment rather than generating
+inputs or references.
