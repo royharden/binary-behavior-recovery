@@ -53,6 +53,54 @@ The v3 verifier refuses earlier untyped report schemas rather than silently
 upgrading their commitment semantics. Preserve old archives with their frozen
 verifier; no old archive is rewritten by this source change.
 
+## Resource-bearing reports
+
+Score-only `bbr.scoring-bundle.v2` continues to produce/verify typed
+`bbr.report.v3` with no resource metrics. Verification explicitly returns
+`resources_recomputed=false` and `resource_status=not_supplied_score_only`.
+Resource joins use closed `bbr.scoring-bundle.v3`: the same scoring fields plus
+`resource_sources`, an inventory path. The resulting `bbr.report.v4` adds exactly
+one `resources` object. The verifier rebuilds it from source; callers cannot supply
+detached costs, tokens or pass counts to `build_report`.
+
+The closed resource source file has schema `bbr.resource-sources.v1`, `ledger_report`
+(path to the actual retained read-only ledger report dictionary), and `receipts`
+(distinct paths to individual call-resource receipt objects). It may additionally
+name one `model_bindings` file. These must be bounded `data` inventory entries;
+resource inputs cannot substitute for scoring inputs or use replay size exceptions.
+The consumer opens no database, provider or worker. It calls the sole DL2
+`summarize_resources` implementation with campaign/origin and complete retained
+source objects. That producer validates exact attempt/request identity and coverage,
+retains unknown liabilities and charges M once; no second ledger arithmetic lives
+in the archive. Missing measurements stay null with reasons.
+
+For USD/pass, the optional `model_bindings` registration pin must have been frozen
+before dispatch/final locks. Its mapping has schema `bbr.model-bindings.v1`, exact
+edition/origin, and two closed bindings covering the opaque score model identities
+once each: `score_model`, `model_id`, `config_id`, `request_model_config_sha256`.
+Canonical mapping bytes must hash to that pin; model/config pairs are unique. Every
+joined request's full model configuration (including endpoint/seed/origin) must
+match the binding hash. No aliases, model choices, signatures or live approvals are
+inferred from a structural match. The builder supplies no populated live mapping.
+
+Only already recomputed full-population M/R/P counts can become pass references.
+Their `source_sha256` commits the verified registration, partition/lock/row-shard
+inventory lineage and recomputed score. Incomplete fixed population, missing call
+coverage, absent binding or absent pass data yields null USD/pass with an explicit
+reason; zero passes also has an undefined ratio. An unpinned or invalid supplied
+mapping is refused. Omission of a mapping artifact permits an otherwise useful
+resource report without pass counts, including when a pin exists but no artifact
+was supplied. No exposed registration is modified to add a mapping. Resource
+output consistency does not authenticate dispatch, original usage or custody.
+
+The canonical score aggregate has schema `bbr.score-input-commitment.v1`,
+`registration_sha256`, `partitions_sha256`, `campaign_lock_sha256`, `partitions`
+and `campaign_receipt` path/raw-SHA256 pairs, ordered `row_shards` path/raw-SHA256
+pairs, and `score_sha256` of the already recomputed score. When a binding artifact
+is supplied it adds its `model_bindings` path/raw-SHA256 pair and canonical
+`model_bindings_sha256` pin. The source commitment is SHA256 of this sorted-key,
+compact, ASCII-escaped JSON object; every pass reference uses that same digest.
+
 Numeric authority is JSON. Do not populate live rows from fixtures, combine models
 or drop scheduled failures. Unknown metrics must be null with a reason. Evaluation
 owns denominator, identity grouping, family means and paired bootstrap; report code

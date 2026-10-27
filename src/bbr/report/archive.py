@@ -139,11 +139,19 @@ def build_report(root: Path, evidence_paths: list[str], summary: dict[str, Any],
         entries.append({"path": path, "kind": "replay" if path in replay_records else "data",
                         "sha256": raw_hash, "replay_record_sha256": replay_records.get(path)})
     bundle = read_json(safe_file(root, scoring_bundle))
-    if not isinstance(bundle, dict) or set(bundle) != {"schema", "registration", "partitions", "campaign_receipt", "row_shards"} or bundle["schema"] != "bbr.scoring-bundle.v2":
-        raise ReportError("closed v2 frozen scoring bundle required")
+    bundle_fields = {"schema", "registration", "partitions", "campaign_receipt", "row_shards"}
+    if not isinstance(bundle, dict) or not isinstance(bundle.get("schema"), str):
+        raise ReportError("closed frozen scoring bundle required")
+    has_resources = bundle["schema"] == "bbr.scoring-bundle.v3"
+    if has_resources:
+        bundle_fields.add("resource_sources")
+    if bundle["schema"] not in {"bbr.scoring-bundle.v2", "bbr.scoring-bundle.v3"} or set(bundle) != bundle_fields:
+        raise ReportError("unsupported or nonclosed scoring bundle")
     if not isinstance(bundle["row_shards"], list) or not bundle["row_shards"] or any(not isinstance(p, str) for p in bundle["row_shards"]):
         raise ReportError("nonempty retained row-shard list required")
     references = [bundle["partitions"], bundle["campaign_receipt"], *bundle["row_shards"]]
+    if has_resources:
+        references.append(bundle["resource_sources"])
     if any(not isinstance(p, str) for p in references) or len(references) != len(set(references)) or scoring_bundle in references or any(p not in files for p in references):
         raise ReportError("unique bundle inputs must be retained in evidence inventory")
     if any(p in replay_records for p in references):
@@ -169,14 +177,29 @@ def build_report(root: Path, evidence_paths: list[str], summary: dict[str, Any],
         campaign_receipt=read_json(files[bundle["campaign_receipt"]]))
     if canonical(recomputed) != canonical(summary):
         raise ReportError("summary differs from retained-observation recomputation")
+    resource_summary = None
+    if has_resources:
+        from .resource_join import recompute_resources
+
+        inventory = {entry["path"]: entry for entry in entries}
+        scoring_inputs = {"registration_sha256": registration.sha256,
+            "partitions": bundle["partitions"],
+            "campaign_receipt": bundle["campaign_receipt"],
+            "row_shards": bundle["row_shards"]}
+        resource_summary = recompute_resources(root,
+            read_json(files[bundle["resource_sources"]]), files=files,
+            inventory=inventory, scoring_inputs=scoring_inputs, score=recomputed,
+            registration=registration)
     if any(_file_hash(safe_file(root, e["path"], max_bytes=ceilings[e["path"]]),
                       ceilings[e["path"]]) != e["sha256"] for e in entries):
         raise ReportError("evidence changed during recomputation")
-    body = {"schema": "bbr.report.v3", "campaign_id": campaign_id,
+    body = {"schema": "bbr.report.v4" if has_resources else "bbr.report.v3", "campaign_id": campaign_id,
             "origin": origin, "label": BANNER if origin == "fixture" else "LIVE RETAINED EVIDENCE",
             "verification_scope": "retained-evidence consistency only",
             "runtime_validation": "unverified", "evidence": entries,
             "scoring_bundle": scoring_bundle, "summary": summary}
+    if has_resources:
+        body["resources"] = resource_summary
     canonical(body)  # Reject non-JSON/non-finite values before writing anything.
     return {**body, "body_sha256": digest(canonical(body))}
 
@@ -214,7 +237,11 @@ def verify_report(report_path: Path, evidence_root: Path) -> dict[str, Any]:
     report = read_json(report_path)
     fields = {"schema", "campaign_id", "origin", "label", "verification_scope",
               "runtime_validation", "evidence", "scoring_bundle", "summary", "body_sha256"}
-    if not isinstance(report, dict) or set(report) != fields or report["schema"] != "bbr.report.v3":
+    if not isinstance(report, dict) or not isinstance(report.get("schema"), str):
+        raise ReportError("unsupported report schema")
+    if report["schema"] == "bbr.report.v4":
+        fields.add("resources")
+    if set(report) != fields or report["schema"] not in {"bbr.report.v3", "bbr.report.v4"}:
         raise ReportError("unsupported report schema")
     body = {k: v for k, v in report.items() if k != "body_sha256"}
     if digest(canonical(body)) != report["body_sha256"]:
@@ -245,4 +272,7 @@ def verify_report(report_path: Path, evidence_root: Path) -> dict[str, Any]:
     return {"status": "retained_evidence_consistent", "fresh_execution": False,
             "runtime_validation": "unverified", "files_checked": len(report["evidence"]),
             "origin": report["origin"], "summary_recomputed": True,
+            "resources_recomputed": report["schema"] == "bbr.report.v4",
+            "resource_status": "retained_sources_recomputed" if report["schema"] == "bbr.report.v4"
+                               else "not_supplied_score_only",
             "reason": "Metrics recomputed from retained observations; no fresh execution or authenticity claim."}

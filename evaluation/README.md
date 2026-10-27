@@ -2,6 +2,16 @@
 
 This directory is outside the installed wheel. It defines no held-out corpus or expected answers. Gate 0 remains PENDING — needs Roy. All execution, independent custody and numerical examples are unverified during Dirty Mode.
 
+The closed required pin set permits exactly one optional name, `model_bindings`.
+It commits an inventory-backed `bbr.model-bindings.v1` mapping of both opaque score
+model identities to exact model/config/full-request-config hashes. The extra pin
+participates in the existing registration digest before dispatch and final locks.
+Registrations lacking it retain their original digest and score-only semantics;
+resource USD/pass remains unbound rather than inferring aliases or retrofitting
+an exposed edition. No other extra pin names are accepted. The report consumer
+validates the mapping against actual retained request.model_config bytes before
+deriving pass counts from the already recomputed full-population scorer summary.
+
 `preregister.registration_from_dict(raw)` loads a closed `Registration` mapping. Exact fields are the dataclass fields; cells are `Cell` mappings, pins are name/digest pairs. It fixes eight families, two finite tiers, 96 nominal cells per model, two model/config identities, seven arms, 2,000 draws and explicit seed. Execution groups use full stripped ELF + execution contract, inside family/codec only. Semantic independence is established by accepted receipts, never opaque labels alone.
 
 `admission.Admission.validate(edition)` requires Roy's accepted independent appointments, release rights, source/partition/canary/freeze and validity receipts. Digests are references requiring operator verification, not signatures verified by this code. `heldout_intake.admit_metadata(...)` checks the entire family metadata roster, normalized semantic fingerprints and capacity receipts. It neither opens nor creates corpus files. Fingerprints must be computed and independently reviewed before seal; caller-controlled hashes do not prove absence of semantic overlap.
