@@ -84,3 +84,26 @@ Evidence API: `bbr.evidence.extract(artifact_bytes, limits=None)` returns a boun
 bundle with `canonical_json()`, `digest()` and `to_contract()`; no binary execution.
 `bbr.screen.screen(text)` returns preserved text, escaped HTML and heuristic flags.
 Golden bundle validation and behavior/privacy checks require the later isolated phase.
+
+Public provider evidence uses `bbr.evidence.PublicEvidenceEnvelope`. Construct with
+`from_bundle(bundle, expected_artifact_sha256=trusted_artifact_hash)`, or parse canonical
+wire bytes using `from_json(raw, expected_artifact_sha256=..., expected_evidence_sha256=...)`.
+`validate_for(artifact_sha256=..., evidence_sha256=...)` joins trusted task identity;
+`to_dict()` is JSON-safe request content and `canonical_json()` serializes the whole
+closed envelope (at most48KiB). The wire has exactly schema_version1, artifact_sha256,
+evidence_sha256 and the full bundle. The evidence digest hashes canonical bundle bytes,
+matching `EvidenceBundle.digest()` and VisibleTask.evidence_sha256; it does not hash
+the outer envelope. Section bytes, addresses, provenance and imports are never dropped.
+
+The parser rejects duplicate/unknown fields, noncanonical JSON, wrong digests/types,
+oversized or overlapping sections/strings, unsafe section/symbol labels, inconsistent
+screen/escaping annotations and missing truncation disclosures. Only existing extractor
+public fields are allowed. Raw evidence strings and bytes remain untrusted: structural
+checks cannot establish absence of source semantics, hidden inputs or canaries. Actual
+ELF authenticity requires the trusted artifact/evidence commitments. Verified tokenizer
+and independent pre-dispatch leak clearance are unavailable, so `require_live_dispatch()`
+always refuses. No live release/clearance approval is invented; mock identity may bind
+the full envelope while runtime validation remains deferred.
+The public profile recognizes printable runs of at least four retained bytes. Custom
+extractor profiles that omit such runs without a truncation disclosure are rejected;
+the envelope never upgrades omitted evidence into an untruncated claim.
