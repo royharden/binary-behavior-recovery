@@ -1,0 +1,14 @@
+{
+  "family_id": "threshold-byte",
+  "split": "dev",
+  "width": 8,
+  "input_arity": 1,
+  "output_arity": 1,
+  "minimum": 0,
+  "maximum": 255,
+  "semantic_fingerprint": "piecewise(x<73:0;x<201:1;else:2)",
+  "finite_domain_size": 256,
+  "author": "0934_Codex_gpt-61-sol_Sub_M15Corpus",
+  "created": "2026-10-27",
+  "rights_status": "pending"
+}
