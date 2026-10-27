@@ -13,11 +13,17 @@ class FixtureDispatch:
     """
 
     def __init__(self, task_id: str, visible_task: Any, provider: MockProvider,
-                 ledger: Ledger, config: ModelConfig = ModelConfig()):
+                 ledger: Ledger, config: ModelConfig = ModelConfig(), *,
+                 evidence_json: bytes | None = None, artifact_sha256: str | None = None):
         if not task_id or config.origin != "fixture" or config.endpoint_id != "offline":
             raise ProviderError("only scoped offline fixtures admitted")
         self.task_id, self.task = task_id, visible_task
         self.provider, self.ledger, self.config = provider, ledger, config
+        # Freeze the full evidence before any reservation. Missing/unvalidated
+        # evidence cannot use an old digest-only fixture as a compatibility path.
+        prepare_request(visible_task, (), config, evidence_json=evidence_json,
+                        artifact_sha256=artifact_sha256)
+        self.evidence_json, self.artifact_sha256 = evidence_json, artifact_sha256
         self.labels: set[str] = set()
 
     def __call__(self, label: str, history: Sequence[Mapping[str, Any]]) -> Any:
@@ -25,12 +31,16 @@ class FixtureDispatch:
         if label not in allowed or label in self.labels or len(self.labels) >= 7:
             raise ProviderError("unique call ceiling or repeated dispatch")
         self.labels.add(label)  # malformed/failed requests consume the attempt.
-        request = prepare_request(self.task, history, self.config)
+        request = prepare_request(self.task, history, self.config,
+                                  evidence_json=self.evidence_json,
+                                  artifact_sha256=self.artifact_sha256)
         digest = request_digest(request)
         reservation = self.ledger.reserve(f"{self.task_id}:{self.config.config_id}:{label}", digest, "0")
         self.ledger.mark_sent(reservation)
         try:
-            result = self.provider.propose(self.task, history, self.config, reservation)
+            result = self.provider.propose(self.task, history, self.config, reservation,
+                                           evidence_json=self.evidence_json,
+                                           artifact_sha256=self.artifact_sha256)
         except (ValueError, TypeError):
             self.ledger.settle(reservation, "0", reason="offline fixture refused; no provider charge")
             raise

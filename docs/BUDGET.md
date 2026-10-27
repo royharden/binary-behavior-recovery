@@ -40,3 +40,16 @@ Deferred checks: concurrent boundary reservations; crash before/after transport;
 restart and config drift; idempotent settlements/reuse; unknown and over-reserve
 bills; evidenced reconciliation; retry/attempt exhaustion; Decimal precision and
 cap edges; exact provider request/price identity; complete campaign preflight.
+
+`from bbr.ledger import read_report`: `read_report(path)` reads an EXISTING ledger
+without constructing Ledger or issuing schema/config/reservation statements.
+It uses an SQLite URI with mode=ro, query_only=ON and a read transaction, and shares
+the accounting snapshot implementation with Ledger.report. Main DB <=64MiB,
+persisted cap <=40, <=1344 attempts and bounded strings are enforced; malformed or
+oversized records refuse instead of silently truncating. Missing path/database
+schema/permission failures remain explicit errors, never an empty success report.
+Do not use Ledger(path).report() in a read-only CLI: constructing Ledger initializes.
+Runtime checks for existing/missing/unreadable DB, WAL/concurrent consistent
+snapshot, absence of schema/config changes and bounded corrupted rows are deferred.
+Builders have not opened any database. Read-only mode is SQLite connection policy;
+OS filesystem/WAL behavior remains unverified.
