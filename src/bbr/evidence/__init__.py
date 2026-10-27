@@ -18,6 +18,13 @@ if TYPE_CHECKING:
     from bbr.contracts import Evidence
 
 EXTRACTOR_VERSION = "bbr-elf-sections-v2"
+_EVIDENCE_LIMITATIONS = (
+    "raw sections only; instruction and function boundaries unknown",
+    "strings are untrusted data; heuristic screening does not establish safety",
+    "allowlist omits defined symbols, source/debug metadata and other section contents",
+    "only fixed libc undefined import names are exposed; unknown names are counted",
+    "binary behavior and source leakage require separate validation",
+)
 _ALLOWED = frozenset({".text", ".rodata", ".data"})
 _ELF_HEADER = struct.Struct("<16sHHIQQQIHHHHHH")
 _SECTION_HEADER = struct.Struct("<IIQQQQIIQQ")
@@ -339,16 +346,15 @@ def extract(artifact: bytes, limits: EvidenceLimits | None = None) -> EvidenceBu
             truncated |= omitted
         used += count
     bundle = EvidenceBundle(sha256(artifact).hexdigest(), EXTRACTOR_VERSION,
-        tuple(slices), tuple(strings), imports, truncated,
-        ("raw sections only; instruction and function boundaries unknown",
-         "strings are untrusted data; heuristic screening does not establish safety",
-         "allowlist omits defined symbols, source/debug metadata and other section contents",
-         "only fixed libc undefined import names are exposed; unknown names are counted",
-         "binary behavior and source leakage require separate validation"))
+        tuple(slices), tuple(strings), imports, truncated, _EVIDENCE_LIMITATIONS)
     if len(bundle.canonical_json()) > limits.max_bundle_bytes:
         raise EvidenceError("serialized bundle exceeds byte cap")
     return bundle
 
 
 __all__ = ["EvidenceBundle", "EvidenceError", "EvidenceLimits", "EXTRACTOR_VERSION",
-    "ImportMetadata", "ImportSymbol", "SectionSlice", "StringEvidence", "extract"]
+    "ImportMetadata", "ImportSymbol", "SectionSlice", "StringEvidence", "extract",
+    "PublicEvidenceEnvelope"]
+
+# Import after extractor dataclasses are defined; the envelope validates that exact schema.
+from .public import PublicEvidenceEnvelope
