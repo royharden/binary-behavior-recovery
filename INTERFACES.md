@@ -10,3 +10,6 @@ Python 3.12; `bbr` package, Pydantic v2 closed contracts owned by DL1. Do not wa
 
 ## Seam 001 — admitted after DL3 request
 VisibleTask.probe_inputs carries the full public pool (64 valid + 16 malformed; max80). CandidateResponse.probe_inputs retains max8 model choices. DL1 owns schema producer; DL3 owns intervention consumer. DL2 owns the isolated callable(code)->(parse_valid, diagnostic) adapter; absent isolated backend returns unavailable/infrastructure error and must not compile/import/execute candidate on the host. See OUTER run assignments/SEAM-001.md. Source contract constructors are authoritative in bbr.contracts; no consumer copies.
+
+## Seam 002 — three-state isolated candidate validation
+DL2 producer: bbr.runner.CandidateValidator(policy, limits, backend=None), callable(code: str)->tuple[bool|None,str]. True/False are isolated checked validity/failure; None is infrastructure unknown, including absent backend, and stops DL3 dispatch without erasing liabilities. No host candidate parsing/import/execution fallback. Real image/toolchain pins required. Comparison uses bbr.differential.compare(..., oracle=..., candidate=..., limits=...); compare_observations is retained-evidence consistency only. DL3 owns intervention reconciliation; DL4 preserves unavailable/unknown at CLI.
