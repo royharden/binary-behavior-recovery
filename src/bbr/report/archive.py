@@ -1,0 +1,197 @@
+"""Numeric JSON authority with a content-addressed, bounded evidence archive.
+
+Verification establishes retained-byte consistency only, never fresh execution or
+the truth of a producer's observations. Archive input is untrusted data.
+"""
+
+from __future__ import annotations
+
+import hashlib
+import html
+import importlib
+import json
+from pathlib import Path, PurePosixPath
+from typing import Any
+
+MAX_FILE = 16 * 1024 * 1024
+MAX_FILES = 8192
+MAX_ARCHIVE = 16 * 1024 * 1024 * 1024
+BANNER = "SCRIPTED FIXTURE / NO LIVE MODEL RESULT"
+
+
+class ReportError(ValueError):
+    """Malformed or inconsistent retained evidence."""
+
+
+def canonical(value: Any) -> bytes:
+    try:
+        return json.dumps(value, sort_keys=True, separators=(",", ":"),
+                          ensure_ascii=True, allow_nan=False).encode("utf-8")
+    except (TypeError, ValueError, RecursionError) as error:
+        raise ReportError("canonical JSON value required") from error
+
+
+def digest(value: bytes) -> str:
+    return hashlib.sha256(value).hexdigest()
+
+
+def safe_file(root: Path, relative: str) -> Path:
+    """Reject absolute paths, links and ambiguous Windows/POSIX components."""
+    if not isinstance(relative, str) or "\\" in relative or ":" in relative or "\0" in relative:
+        raise ReportError("archive path must be a relative POSIX path")
+    parts = PurePosixPath(relative).parts
+    if not parts or relative != "/".join(parts) or relative.startswith("/") or any(p in {".", ".."} or p.endswith((".", " ")) for p in relative.split("/")):
+        raise ReportError("unsafe archive path")
+    for part in parts:
+        if part.split(".")[0].upper() in {"CON", "PRN", "AUX", "NUL", *(f"COM{i}" for i in range(1, 10)), *(f"LPT{i}" for i in range(1, 10))}:
+            raise ReportError("reserved archive component")
+    # Check the root chain before resolving it; resolving first hides a symlink
+    # or Windows junction used as the evidence/report directory itself.
+    absolute = root.absolute()
+    for parent in (*reversed(absolute.parents), absolute):
+        if parent.is_symlink() or parent.is_junction():
+            raise ReportError("archive root links are forbidden")
+    base = root.resolve(strict=True)
+    candidate = base
+    for part in parts:
+        candidate = candidate / part
+        if candidate.is_symlink() or candidate.is_junction():
+            raise ReportError("archive links are forbidden")
+    resolved = candidate.resolve(strict=True)
+    if not resolved.is_relative_to(base) or not resolved.is_file():
+        raise ReportError("archive entry is not a contained regular file")
+    if resolved.stat().st_size > MAX_FILE:
+        raise ReportError("archive entry exceeds size cap")
+    return resolved
+
+
+def _object(pairs: list[tuple[str, Any]]) -> dict[str, Any]:
+    result: dict[str, Any] = {}
+    for key, value in pairs:
+        if key in result:
+            raise ReportError("duplicate JSON key")
+        result[key] = value
+    return result
+
+
+def read_json(path: Path) -> Any:
+    if path.stat().st_size > MAX_FILE:
+        raise ReportError("JSON exceeds size cap")
+    def invalid(value: str) -> None:
+        raise ReportError(f"non-finite JSON number: {value}")
+    try:
+        return json.loads(path.read_text(encoding="utf-8"), object_pairs_hook=_object,
+                          parse_constant=invalid)
+    except (UnicodeError, RecursionError) as error:
+        raise ReportError("invalid UTF-8 or JSON nesting") from error
+
+
+def build_report(root: Path, evidence_paths: list[str], summary: dict[str, Any],
+                 *, origin: str, campaign_id: str, scoring_bundle: str) -> dict[str, Any]:
+    if not isinstance(origin, str) or origin not in {"fixture", "live"} or not isinstance(campaign_id, str) or not campaign_id:
+        raise ReportError("explicit fixture/live origin and campaign ID required")
+    if not isinstance(evidence_paths, list) or not evidence_paths or len(evidence_paths) > MAX_FILES or any(not isinstance(p, str) for p in evidence_paths):
+        raise ReportError("bounded evidence path list required")
+    if len(evidence_paths) != len({p.casefold() for p in evidence_paths}):
+        raise ReportError("nonempty unique evidence inventory required")
+    if not isinstance(scoring_bundle, str) or scoring_bundle not in evidence_paths:
+        raise ReportError("scoring bundle must be in retained inventory")
+    files = {p: safe_file(root, p) for p in evidence_paths}
+    if sum(p.stat().st_size for p in files.values()) > MAX_ARCHIVE:
+        raise ReportError("evidence archive exceeds total size cap")
+    entries = [{"path": p, "sha256": digest(files[p].read_bytes())} for p in sorted(files)]
+    bundle = read_json(safe_file(root, scoring_bundle))
+    if not isinstance(bundle, dict) or set(bundle) != {"schema", "registration", "partitions", "campaign_receipt", "row_shards"} or bundle["schema"] != "bbr.scoring-bundle.v2":
+        raise ReportError("closed v2 frozen scoring bundle required")
+    if not isinstance(bundle["row_shards"], list) or not bundle["row_shards"] or any(not isinstance(p, str) for p in bundle["row_shards"]):
+        raise ReportError("nonempty retained row-shard list required")
+    references = [bundle["partitions"], bundle["campaign_receipt"], *bundle["row_shards"]]
+    if any(not isinstance(p, str) for p in references) or len(references) != len(set(references)) or scoring_bundle in references or any(p not in files for p in references):
+        raise ReportError("unique bundle inputs must be retained in evidence inventory")
+    # evaluation/ deliberately remains outside the installed wheel. A verifier
+    # needs that frozen harness on its module path; absence is an explicit refusal.
+    try:
+        preregister = importlib.import_module("evaluation.preregister")
+        scorer = importlib.import_module("evaluation.run")
+    except ImportError as error:
+        raise ReportError("frozen evaluation harness unavailable") from error
+    registration = preregister.registration_from_dict(bundle["registration"])
+    if registration.origin != origin or registration.edition != campaign_id:
+        raise ReportError("report and preregistration provenance differ")
+    rows = []
+    for path in bundle["row_shards"]:
+        shard = read_json(files[path])
+        if not isinstance(shard, list) or len(shard) + len(rows) > len(registration.final_keys):
+            raise ReportError("bounded retained row-shard arrays required")
+        rows.extend(shard)
+    recomputed = scorer.retained_report(registration, rows,
+        partitions=read_json(files[bundle["partitions"]]),
+        campaign_receipt=read_json(files[bundle["campaign_receipt"]]))
+    if canonical(recomputed) != canonical(summary):
+        raise ReportError("summary differs from retained-observation recomputation")
+    if any(digest(safe_file(root, e["path"]).read_bytes()) != e["sha256"] for e in entries):
+        raise ReportError("evidence changed during recomputation")
+    body = {"schema": "bbr.report.v2", "campaign_id": campaign_id,
+            "origin": origin, "label": BANNER if origin == "fixture" else "LIVE RETAINED EVIDENCE",
+            "verification_scope": "retained-evidence consistency only",
+            "runtime_validation": "unverified", "evidence": entries,
+            "scoring_bundle": scoring_bundle, "summary": summary}
+    canonical(body)  # Reject non-JSON/non-finite values before writing anything.
+    return {**body, "body_sha256": digest(canonical(body))}
+
+
+def render_markdown(report: dict[str, Any]) -> str:
+    # HTML entities protect Markdown delimiters, links, raw HTML and fenced code.
+    def escape(value: str) -> str:
+        return "".join(f"&#{ord(c)};" if not c.isalnum() and c != " " else c for c in value)
+    return ("# Binary behavior recovery\n\n" + escape(report["label"]) +
+            "\n\nRetained-evidence consistency only; runtime unverified.\n\n" +
+            escape(canonical(report).decode("ascii")) + "\n")
+
+
+def render_html(report: dict[str, Any]) -> str:
+    return ("<!doctype html><html lang=\"en\"><meta charset=\"utf-8\">"
+            "<meta http-equiv=\"Content-Security-Policy\" content=\"default-src 'none'; style-src 'none'\">"
+            "<title>Binary behavior recovery</title><h1>Binary behavior recovery</h1><p>" +
+            html.escape(report["label"]) + "</p><p>Retained-evidence consistency only; "
+            "runtime unverified.</p><pre>" + html.escape(canonical(report).decode("ascii")) +
+            "</pre></html>\n")
+
+
+def write_report(destination: Path, report: dict[str, Any]) -> None:
+    """Create a new report directory; never overwrite an existing archive."""
+    destination.mkdir(parents=True, exist_ok=False)
+    (destination / "report.json").write_bytes(canonical(report) + b"\n")
+    (destination / "report.html").write_bytes(render_html(report).encode("utf-8"))
+    (destination / "report.md").write_bytes(render_markdown(report).encode("utf-8"))
+
+
+def verify_report(report_path: Path, evidence_root: Path) -> dict[str, Any]:
+    if report_path.name != "report.json":
+        raise ReportError("report entrypoint must be report.json")
+    report_path = safe_file(report_path.parent, report_path.name)
+    report = read_json(report_path)
+    fields = {"schema", "campaign_id", "origin", "label", "verification_scope",
+              "runtime_validation", "evidence", "scoring_bundle", "summary", "body_sha256"}
+    if not isinstance(report, dict) or set(report) != fields or report["schema"] != "bbr.report.v2":
+        raise ReportError("unsupported report schema")
+    body = {k: v for k, v in report.items() if k != "body_sha256"}
+    if digest(canonical(body)) != report["body_sha256"]:
+        raise ReportError("report digest mismatch")
+    if not isinstance(report["evidence"], list) or any(
+        not isinstance(e, dict) or set(e) != {"path", "sha256"} for e in report["evidence"]
+    ):
+        raise ReportError("invalid evidence inventory")
+    expected = build_report(evidence_root, [e["path"] for e in report["evidence"]],
+                            report["summary"], origin=report["origin"],
+                            campaign_id=report["campaign_id"], scoring_bundle=report["scoring_bundle"])
+    if canonical(expected) != canonical(report):
+        raise ReportError("evidence or provenance mismatch")
+    for name, rendered in (("report.html", render_html(report)), ("report.md", render_markdown(report))):
+        retained = safe_file(report_path.parent, name)
+        if retained.read_bytes() != rendered.encode("utf-8"):
+            raise ReportError(f"rendered view mismatch: {name}")
+    return {"status": "retained_evidence_consistent", "fresh_execution": False,
+            "runtime_validation": "unverified", "files_checked": len(report["evidence"]),
+            "origin": report["origin"], "summary_recomputed": True,
+            "reason": "Metrics recomputed from retained observations; no fresh execution or authenticity claim."}
