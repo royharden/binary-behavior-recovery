@@ -1,5 +1,22 @@
 # Recovery construction API
 
+SEAM-003 consumer construction: `prepare_request`, `MockProvider.propose` and
+`FixtureDispatch` now require full canonical public evidence bytes and the expected
+source artifact digest. Full envelope content is included in request hashing; its
+bundle digest is compared with VisibleTask.evidence_sha256, and its source artifact
+is checked against the trusted expected artifact. Missing,
+noncanonical, >48KiB, mismatched or changed content refuses; narrow `to_contract`
+and digest-only requests have no fallback. Fixture files bind the same full object.
+DL1 retains ownership of public-field/section/string/import validation. Consumer
+imports `PublicEvidenceEnvelope` from `bbr.evidence`, calls `from_json` with both
+expected digests, then `validate_for`, `canonical_json` and `to_dict`. No other
+evidence model or permissive callback exists. Missing producer source raises
+`ProviderUnavailable` before fixture transport. Producer source must be integrated
+before joined execution; this source reconciliation is runtime-unverified.
+Live transport always refuses because verified tokenizer,
+budget and pre-dispatch leak controls are unavailable. No estimates are represented
+as verified token counts. Existing SEAM-002 validator-unknown semantics remain.
+
 Runtime unverified; independent admission pending. Original implementation with no
 third-party source reuse. No candidate source is imported or executed by this code.
 
@@ -67,7 +84,8 @@ closed strict fields and hexadecimal JSON byte serialization. This consumer's
 as hex for the broker. `VisibleTask` supplies eight examples and a public pool of
 80 distinct raw inputs (64 valid, 16 malformed), disjoint from examples. The
 broker checks unique public membership and its 24 fixed checks; carrying the committed
-evidence content behind `evidence_sha256` remains integration work. `ProbeBroker.for_task`
+evidence envelope now follows the SEAM-003 API above; joined execution remains
+unverified. `ProbeBroker.for_task`
 now binds the broker to exactly the producer-validated 80-input pool; direct
 construction remains a lower-level development API. Static inspection confirms
 names and source contracts only; no import, schema round-trip, or producer/consumer

@@ -12,6 +12,10 @@ class ProviderError(ValueError):
     """A refused request is retained as a failed attempt by its controller."""
 
 
+class ProviderUnavailable(RuntimeError):
+    """Required producer validation is unavailable; stop before dispatch."""
+
+
 @dataclass(frozen=True)
 class ModelConfig:
     model_id: str = "scripted-public-v1"
@@ -31,14 +35,17 @@ def request_digest(request: Mapping[str, Any]) -> str:
 
 
 def prepare_request(visible_task: Any, history: Sequence[Mapping[str, Any]],
-                    model_config: ModelConfig) -> dict[str, Any]:
+                    model_config: ModelConfig, *, evidence_json: bytes | None = None,
+                    artifact_sha256: str | None = None) -> dict[str, Any]:
     from bbr.contracts import VisibleTask
 
     task = VisibleTask.model_validate(visible_task)
     if any(len(row.stdin_bytes) > 64 or len(row.stdout_bytes) > 4096 for row in task.examples):
         raise ProviderError("visible examples exceed public I/O caps")
+    evidence = bind_evidence(evidence_json, artifact_sha256, task.evidence_sha256)
     return {"visible_task": task.model_dump(mode="json"),
-            "history": list(history), "model_config": asdict(model_config)}
+            "history": list(history), "model_config": asdict(model_config),
+            "evidence": evidence, "artifact_sha256": artifact_sha256}
 
 
 def _closed_object(pairs: list[tuple[str, Any]]) -> dict[str, Any]:
@@ -48,6 +55,30 @@ def _closed_object(pairs: list[tuple[str, Any]]) -> dict[str, Any]:
             raise ProviderError("duplicate JSON key")
         result[key] = value
     return result
+
+
+def bind_evidence(raw: bytes | None, artifact_sha256: str | None,
+                  evidence_sha256: str) -> dict[str, Any]:
+    """Consume DL1's exact envelope; evidence digest hashes its canonical bundle."""
+    if type(raw) is not bytes or not raw or len(raw) > 48 * 1024:
+        raise ProviderError("full canonical public evidence required, at most 48 KiB")
+    if (type(artifact_sha256) is not str or len(artifact_sha256) != 64
+            or any(c not in "0123456789abcdef" for c in artifact_sha256)):
+        raise ProviderError("expected source artifact SHA256 required")
+    try:
+        from bbr.evidence import PublicEvidenceEnvelope
+    except ImportError as exc:
+        raise ProviderUnavailable("public_evidence_validator_unavailable: DL1 envelope required") from exc
+    try:
+        envelope = PublicEvidenceEnvelope.from_json(raw,
+            expected_artifact_sha256=artifact_sha256,
+            expected_evidence_sha256=evidence_sha256)
+        envelope.validate_for(artifact_sha256=artifact_sha256, evidence_sha256=evidence_sha256)
+        if envelope.canonical_json() != raw:
+            raise ProviderError("producer changed canonical envelope bytes")
+        return envelope.to_dict()
+    except (ValueError, TypeError) as exc:
+        raise ProviderError("invalid public evidence envelope") from exc
 
 
 class MockProvider:
@@ -64,6 +95,13 @@ class MockProvider:
             row = json.loads(canonical(supplied), object_pairs_hook=_closed_object)
             if set(row) != {"request", "request_sha256", "response", "usage", "origin"}:
                 raise ProviderError("fixture fields differ from closed schema")
+            request = row["request"]
+            if not isinstance(request, dict) or set(request) != {
+                "visible_task", "history", "model_config", "evidence", "artifact_sha256"
+            } or not isinstance(request["visible_task"], dict):
+                raise ProviderError("fixture requires full evidence-bound request")
+            bind_evidence(canonical(request["evidence"]), request["artifact_sha256"],
+                          request["visible_task"].get("evidence_sha256", ""))
             digest = request_digest(row["request"])
             if digest != row["request_sha256"] or digest in self._fixtures:
                 raise ProviderError("fixture digest mismatch or duplicate")
@@ -84,12 +122,15 @@ class MockProvider:
         return cls(rows)
 
     def propose(self, visible_task: Any, history: Sequence[Mapping[str, Any]],
-                model_config: ModelConfig, reservation: Any) -> Any:
+                model_config: ModelConfig, reservation: Any, *,
+                evidence_json: bytes | None = None,
+                artifact_sha256: str | None = None) -> Any:
         from bbr.contracts import CandidateResponse
 
         if model_config.origin != "fixture" or model_config.endpoint_id != "offline":
             raise ProviderError("live adapters disabled pending Roy and preflight")
-        request = prepare_request(visible_task, history, model_config)
+        request = prepare_request(visible_task, history, model_config,
+                                  evidence_json=evidence_json, artifact_sha256=artifact_sha256)
         digest = request_digest(request)
         # Reservation is supplied by the caller after durable reserve. Request
         # identity cannot be substituted by a task ID or a fuzzy fixture match.
@@ -111,4 +152,4 @@ class MockProvider:
 
 
 def live_provider(*_args: Any, **_kwargs: Any) -> None:
-    raise ProviderError("live_not_run: adapters disabled; no credentials or SDKs loaded")
+    raise ProviderUnavailable("live_not_run: transport disabled; verified tokenizer, budget and pre-dispatch leak controls unavailable")

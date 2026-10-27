@@ -181,11 +181,66 @@ class Ledger:
 
     def report(self) -> dict[str, object]:
         with self._transaction() as db:
-            config = db.execute("SELECT * FROM config WHERE id=1").fetchone()
-            attempts = [dict(row) for row in db.execute("SELECT * FROM attempts ORDER BY request_id,attempt")]
-            committed = self._committed(db)
-            blocked = any(row["status"] in ("reserved", "in_flight", "unknown") for row in attempts)
-            return {"cap_usd": config["cap"], "committed_usd": str(committed),
-                    "available_usd": str(max(Decimal(0), Decimal(config["cap"]) - committed)),
-                    "attempts": attempts, "max_attempts": config["max_attempts"],
-                    "dispatch_blocked": blocked or committed >= Decimal(config["cap"]) or len(attempts) >= config["max_attempts"]}
+            return _report_snapshot(db)
+
+
+def _report_snapshot(db: sqlite3.Connection) -> dict[str, object]:
+    """One accounting calculation for both existing and read-only consumers."""
+    configs = db.execute("SELECT id,cap,max_attempts FROM config LIMIT 2").fetchall()
+    if len(configs) != 1 or configs[0]["id"] != 1:
+        raise BudgetStop("Invalid ledger configuration")
+    config = configs[0]
+    cap = _money(config["cap"])
+    if not 0 < cap <= Decimal("40") or type(config["max_attempts"]) is not int or not 1 <= config["max_attempts"] <= 1344:
+        raise BudgetStop("Invalid persisted ledger ceilings")
+    # Bound text before materializing rows; do not silently truncate evidence.
+    if db.execute("SELECT 1 FROM attempts WHERE length(request_id)>256 OR length(digest)!=64 OR length(reserve)>32 OR length(charge)>32 OR length(reason)>4096 LIMIT 1").fetchone():
+        raise BudgetStop("Ledger report text bounds exceeded")
+    attempts = [dict(row) for row in db.execute(
+        "SELECT request_id,digest,attempt,reserve,status,charge,reason FROM attempts ORDER BY request_id,attempt LIMIT 1345")]
+    if len(attempts) > config["max_attempts"]:
+        raise BudgetStop("Ledger report attempt ceiling exceeded")
+    for row in attempts:
+        if (type(row["request_id"]) is not str or not row["request_id"].strip()
+                or type(row["digest"]) is not str or len(row["digest"]) != 64
+                or any(c not in "0123456789abcdef" for c in row["digest"])
+                or type(row["attempt"]) is not int or row["attempt"] not in (1, 2)
+                or type(row["reason"]) is not str
+                or row["status"] not in {"reserved", "in_flight", "unknown", "settled", "never_sent"}):
+            raise BudgetStop("Malformed ledger attempt")
+        _money(row["reserve"])
+        if row["charge"] is not None:
+            _money(row["charge"])
+        elif row["status"] in {"settled", "never_sent"}:
+            raise BudgetStop("Closed attempt lacks billing disposition")
+    committed = Ledger._committed(db)
+    blocked = any(row["status"] in ("reserved", "in_flight", "unknown") for row in attempts)
+    return {"cap_usd": str(cap), "committed_usd": str(committed),
+            "available_usd": str(max(Decimal(0), cap - committed)),
+            "attempts": attempts, "max_attempts": config["max_attempts"],
+            "dispatch_blocked": blocked or committed >= cap or len(attempts) >= config["max_attempts"]}
+
+
+def read_report(path: str | Path) -> dict[str, object]:
+    """Read an existing ledger snapshot without initializing/configuring it.
+
+    No Ledger instance is constructed, no schema statement is issued, and no
+    reservation/settlement occurs. SQLite WAL snapshot behavior requires later
+    runtime validation; immutable=1 is deliberately absent so WAL is not ignored.
+    """
+    source = Path(path)
+    if source.is_symlink():
+        raise BudgetStop("Ledger report refuses symlink path")
+    source = source.resolve(strict=True)
+    if not source.is_file() or source.stat().st_size > 64 * 1024 * 1024:
+        raise BudgetStop("Existing bounded ledger file required")
+    db = sqlite3.connect(source.as_uri() + "?mode=ro", uri=True, timeout=5, isolation_level=None)
+    db.row_factory = sqlite3.Row
+    try:
+        db.execute("PRAGMA query_only=ON")
+        db.execute("BEGIN")
+        return _report_snapshot(db)
+    finally:
+        if db.in_transaction:
+            db.execute("ROLLBACK")
+        db.close()
