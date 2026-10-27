@@ -14,6 +14,7 @@ from pathlib import Path, PurePosixPath
 from typing import Any
 
 MAX_FILE = 16 * 1024 * 1024
+MAX_REPLAY_FILE = 32 * 1024 * 1024
 MAX_FILES = 8192
 MAX_ARCHIVE = 16 * 1024 * 1024 * 1024
 BANNER = "SCRIPTED FIXTURE / NO LIVE MODEL RESULT"
@@ -35,8 +36,10 @@ def digest(value: bytes) -> str:
     return hashlib.sha256(value).hexdigest()
 
 
-def safe_file(root: Path, relative: str) -> Path:
+def safe_file(root: Path, relative: str, *, max_bytes: int = MAX_FILE) -> Path:
     """Reject absolute paths, links and ambiguous Windows/POSIX components."""
+    if type(max_bytes) is not int or max_bytes not in {MAX_FILE, MAX_REPLAY_FILE}:
+        raise ReportError("unsupported archive entry size ceiling")
     if not isinstance(relative, str) or "\\" in relative or ":" in relative or "\0" in relative:
         raise ReportError("archive path must be a relative POSIX path")
     parts = PurePosixPath(relative).parts
@@ -60,9 +63,21 @@ def safe_file(root: Path, relative: str) -> Path:
     resolved = candidate.resolve(strict=True)
     if not resolved.is_relative_to(base) or not resolved.is_file():
         raise ReportError("archive entry is not a contained regular file")
-    if resolved.stat().st_size > MAX_FILE:
+    if resolved.stat().st_size > max_bytes:
         raise ReportError("archive entry exceeds size cap")
     return resolved
+
+
+def _file_hash(path: Path, ceiling: int) -> str:
+    value = hashlib.sha256()
+    total = 0
+    with path.open("rb") as stream:
+        while block := stream.read(65536):
+            total += len(block)
+            if total > ceiling:
+                raise ReportError("archive entry grew beyond declared type ceiling")
+            value.update(block)
+    return value.hexdigest()
 
 
 def _object(pairs: list[tuple[str, Any]]) -> dict[str, Any]:
@@ -87,7 +102,8 @@ def read_json(path: Path) -> Any:
 
 
 def build_report(root: Path, evidence_paths: list[str], summary: dict[str, Any],
-                 *, origin: str, campaign_id: str, scoring_bundle: str) -> dict[str, Any]:
+                 *, origin: str, campaign_id: str, scoring_bundle: str,
+                 replay_records: dict[str, str] | None = None) -> dict[str, Any]:
     if not isinstance(origin, str) or origin not in {"fixture", "live"} or not isinstance(campaign_id, str) or not campaign_id:
         raise ReportError("explicit fixture/live origin and campaign ID required")
     if not isinstance(evidence_paths, list) or not evidence_paths or len(evidence_paths) > MAX_FILES or any(not isinstance(p, str) for p in evidence_paths):
@@ -96,10 +112,32 @@ def build_report(root: Path, evidence_paths: list[str], summary: dict[str, Any],
         raise ReportError("nonempty unique evidence inventory required")
     if not isinstance(scoring_bundle, str) or scoring_bundle not in evidence_paths:
         raise ReportError("scoring bundle must be in retained inventory")
-    files = {p: safe_file(root, p) for p in evidence_paths}
+    replay_records = {} if replay_records is None else replay_records
+    if not isinstance(replay_records, dict) or any(
+        not isinstance(p, str) or p not in evidence_paths or not isinstance(h, str)
+        or len(h) != 64 or any(c not in "0123456789abcdef" for c in h)
+        for p, h in replay_records.items()
+    ):
+        raise ReportError("replay records require inventory paths and canonical body SHA256 commitments")
+    if scoring_bundle in replay_records:
+        raise ReportError("scoring bundle must be a data entry")
+    ceilings = {p: MAX_REPLAY_FILE if p in replay_records else MAX_FILE for p in evidence_paths}
+    files = {p: safe_file(root, p, max_bytes=ceilings[p]) for p in evidence_paths}
     if sum(p.stat().st_size for p in files.values()) > MAX_ARCHIVE:
         raise ReportError("evidence archive exceeds total size cap")
-    entries = [{"path": p, "sha256": digest(files[p].read_bytes())} for p in sorted(files)]
+    entries = []
+    for path in sorted(files):
+        raw_hash = _file_hash(files[path], ceilings[path])
+        if path in replay_records:
+            # The external replay commitment covers the canonical envelope body,
+            # excluding record_sha256. It is never the raw archive file hash.
+            try:
+                from bbr.replay import load_record
+            except ImportError as error:
+                raise ReportError("replay verifier producer unavailable") from error
+            load_record(root, path, expected_record_sha256=replay_records[path])
+        entries.append({"path": path, "kind": "replay" if path in replay_records else "data",
+                        "sha256": raw_hash, "replay_record_sha256": replay_records.get(path)})
     bundle = read_json(safe_file(root, scoring_bundle))
     if not isinstance(bundle, dict) or set(bundle) != {"schema", "registration", "partitions", "campaign_receipt", "row_shards"} or bundle["schema"] != "bbr.scoring-bundle.v2":
         raise ReportError("closed v2 frozen scoring bundle required")
@@ -108,6 +146,8 @@ def build_report(root: Path, evidence_paths: list[str], summary: dict[str, Any],
     references = [bundle["partitions"], bundle["campaign_receipt"], *bundle["row_shards"]]
     if any(not isinstance(p, str) for p in references) or len(references) != len(set(references)) or scoring_bundle in references or any(p not in files for p in references):
         raise ReportError("unique bundle inputs must be retained in evidence inventory")
+    if any(p in replay_records for p in references):
+        raise ReportError("scoring inputs must be bounded data entries, not replay records")
     # evaluation/ deliberately remains outside the installed wheel. A verifier
     # needs that frozen harness on its module path; absence is an explicit refusal.
     try:
@@ -129,9 +169,10 @@ def build_report(root: Path, evidence_paths: list[str], summary: dict[str, Any],
         campaign_receipt=read_json(files[bundle["campaign_receipt"]]))
     if canonical(recomputed) != canonical(summary):
         raise ReportError("summary differs from retained-observation recomputation")
-    if any(digest(safe_file(root, e["path"]).read_bytes()) != e["sha256"] for e in entries):
+    if any(_file_hash(safe_file(root, e["path"], max_bytes=ceilings[e["path"]]),
+                      ceilings[e["path"]]) != e["sha256"] for e in entries):
         raise ReportError("evidence changed during recomputation")
-    body = {"schema": "bbr.report.v2", "campaign_id": campaign_id,
+    body = {"schema": "bbr.report.v3", "campaign_id": campaign_id,
             "origin": origin, "label": BANNER if origin == "fixture" else "LIVE RETAINED EVIDENCE",
             "verification_scope": "retained-evidence consistency only",
             "runtime_validation": "unverified", "evidence": entries,
@@ -173,18 +214,28 @@ def verify_report(report_path: Path, evidence_root: Path) -> dict[str, Any]:
     report = read_json(report_path)
     fields = {"schema", "campaign_id", "origin", "label", "verification_scope",
               "runtime_validation", "evidence", "scoring_bundle", "summary", "body_sha256"}
-    if not isinstance(report, dict) or set(report) != fields or report["schema"] != "bbr.report.v2":
+    if not isinstance(report, dict) or set(report) != fields or report["schema"] != "bbr.report.v3":
         raise ReportError("unsupported report schema")
     body = {k: v for k, v in report.items() if k != "body_sha256"}
     if digest(canonical(body)) != report["body_sha256"]:
         raise ReportError("report digest mismatch")
     if not isinstance(report["evidence"], list) or any(
-        not isinstance(e, dict) or set(e) != {"path", "sha256"} for e in report["evidence"]
+        not isinstance(e, dict) or set(e) != {"path", "kind", "sha256", "replay_record_sha256"}
+        or not isinstance(e["path"], str) or not isinstance(e["sha256"], str)
+        or len(e["sha256"]) != 64 or any(c not in "0123456789abcdef" for c in e["sha256"])
+        or not isinstance(e["kind"], str) or e["kind"] not in {"data", "replay"}
+        or (e["kind"] == "data" and e["replay_record_sha256"] is not None)
+        or (e["kind"] == "replay" and (not isinstance(e["replay_record_sha256"], str)
+            or len(e["replay_record_sha256"]) != 64
+            or any(c not in "0123456789abcdef" for c in e["replay_record_sha256"])))
+        for e in report["evidence"]
     ):
         raise ReportError("invalid evidence inventory")
     expected = build_report(evidence_root, [e["path"] for e in report["evidence"]],
                             report["summary"], origin=report["origin"],
-                            campaign_id=report["campaign_id"], scoring_bundle=report["scoring_bundle"])
+                            campaign_id=report["campaign_id"], scoring_bundle=report["scoring_bundle"],
+                            replay_records={e["path"]: e["replay_record_sha256"]
+                                            for e in report["evidence"] if e["kind"] == "replay"})
     if canonical(expected) != canonical(report):
         raise ReportError("evidence or provenance mismatch")
     for name, rendered in (("report.html", render_html(report)), ("report.md", render_markdown(report))):
