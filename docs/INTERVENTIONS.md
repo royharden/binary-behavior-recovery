@@ -1,5 +1,30 @@
 # Recovery construction API
 
+SEAM-005 retained resources: `FixtureDispatch(..., campaign_id=<opaque ID>,
+receipt_sink=None)` now requires explicit campaign identity. After each successful
+durable mark_sent, it retains exactly one closed `bbr.call-resource.v1` receipt on
+success, schema refusal or unexpected failure. `receipt_snapshots()` returns detached
+JSON mappings; `receipt_jsonl()` returns canonical JSON plus LF per receipt, in dispatch
+order. Optional sink receives another detached snapshot after local retention. A sink
+failure raises ReceiptSinkError, stops the flow, and must never trigger redispatch;
+caller can recover local snapshots. FixtureDispatch does not write archive files.
+
+Receipt keys are schema, campaign_id, origin, task_id, model_id, config_id, call_id,
+request_id, attempt, request_sha256, request, provider_record,
+provider_record_sha256 and provider_record_reason. The request is the exact detached
+object used for reservation. MockProvider.propose's optional record_sink captures
+the exact matched fixture before response validation; a malformed response retains
+that row without claiming success. No exact row gives null record/hash and an
+explicit reason. No exception text, inferred usage, resource timing, charge or status
+is manufactured. Existing authored fixture usage is retained unchanged; absent wall,
+CPU and memory measurements remain absent for the resource summarizer to label unknown.
+Ledger report is authoritative for reserve, charge and status. If settlement fails,
+receipt retention does not settle or reconcile the ledger. Dispatch refuses task-ID
+drift; shared M reuse creates no new call/receipt. Failed mark_sent/reuse is not a new
+owned dispatch. The archive owner must join exact full ledger attempt coverage and
+reject duplicate/missing sidecars, then hash inventory sources for DL2 summarization.
+No receipt proves real execution, token correctness, isolation or custody.
+
 SEAM-003 consumer construction: `prepare_request`, `MockProvider.propose` and
 `FixtureDispatch` now require full canonical public evidence bytes and the expected
 source artifact digest. Full envelope content is included in request hashing; its

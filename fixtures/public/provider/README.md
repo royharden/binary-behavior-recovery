@@ -22,3 +22,10 @@ the full request identity; it cannot match a previous scripted response.
 No authored target/reference/expected-answer fixture is included: independent
 admission and public corpus inputs remain pending. Supply admitted public scripted
 fixtures later. Every presentation must say SCRIPTED FIXTURE / NO LIVE MODEL RESULT.
+
+`MockProvider.propose(..., record_sink=callback)` passes a detached copy of the exact
+matched row before response validation. Resource receipts retain this source and its
+canonical hash, including authored usage; no match retains null plus reason. No wall,
+CPU, memory or replacement usage values are invented. Receipt archive serialization
+belongs to `FixtureDispatch.receipt_jsonl()`; JSON fixture replay never adds another
+charge or receipt for shared M reuse.
