@@ -27,14 +27,18 @@ def parser() -> argparse.ArgumentParser:
     extract.add_argument("--artifact-sha256", required=True)
     run = commands.add_parser("run")
     run.add_argument("--arm", choices=("S", "M", "R", "P"), required=True)
-    run.add_argument("--config", type=Path, required=True)
+    run_config = run.add_mutually_exclusive_group(required=True)
+    run_config.add_argument("--config", type=Path, help="offline request preflight")
+    run_config.add_argument("--journey-config", type=Path, help="one-task fixture driver; requires admitted dependencies")
     replay = commands.add_parser("replay", help="verify retained replay; fresh execution stays unavailable")
     replay.add_argument("--bundle", type=Path, required=True)
     replay.add_argument("--record-sha256", required=True,
                         help="digest from a separately trusted manifest")
     demo = commands.add_parser("demo")
     demo.add_argument("--mock", action="store_true", default=True)
-    demo.add_argument("--config", type=Path)
+    demo_config = demo.add_mutually_exclusive_group()
+    demo_config.add_argument("--config", type=Path)
+    demo_config.add_argument("--journey-config", type=Path)
     verify = commands.add_parser("verify-report")
     verify.add_argument("report", type=Path)
     verify.add_argument("--evidence-root", type=Path, required=True)
@@ -59,7 +63,10 @@ def main(argv: Sequence[str] | None = None) -> int:
             output, code = replay_retained(args.bundle, args.record_sha256)
         elif args.command in {"run", "demo"}:
             print(BANNER)
-            if args.command == "demo" and args.config is None:
+            if args.journey_config is not None:
+                from .fixture import run_journey
+                output, code = run_journey(args.journey_config, getattr(args, "arm", "P"))
+            elif args.command == "demo" and args.config is None:
                 output, code = ({"origin": "fixture", "status": "configuration_required",
                     "reason": "Supply --config with pinned public artifact, VisibleTask and worker policy.",
                     "live_status": "not_run", "runtime_validation": "unverified"}, 2)
