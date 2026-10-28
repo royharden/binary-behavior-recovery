@@ -207,7 +207,7 @@ def build_report(root: Path, evidence_paths: list[str], summary: dict[str, Any],
                 read_json(files[bundle["domain_sources"]]), files=files,
                 inventory={entry["path"]: entry for entry in entries},
                 registration=registration, partitions=partitions_data,
-                campaign_receipt=receipt_data)
+                campaign_receipt=receipt_data, primary_rows=rows)
     resource_summary = None
     if has_resources:
         from .resource_join import recompute_resources

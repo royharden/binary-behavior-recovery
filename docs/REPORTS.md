@@ -139,6 +139,15 @@ not arbitrary stdin strings or the primary private184 score. Calibration events 
 retained separately and never promoted to a population rate. Structural commitments
 do not authenticate original execution, independent custody or admission.
 
+Archive composition also joins each full-domain observation to any primary retained
+observation with the same task/model/arm/candidate/input identity. Shared Observation
+projection compares stdout, exit, signal, timeout, output cap and status; timing and
+diagnostic fields are not equality criteria. Conflicting retained observations refuse
+the report even when their separate hashes are internally consistent. Public-only
+full-domain inputs need not occur in the primary score. The returned overlap count
+discloses exactly what was checked; direct domain-only composition without primary
+rows explicitly makes no cross-source consistency claim for absent observations.
+
 Numeric authority is JSON. Do not populate live rows from fixtures, combine models
 or drop scheduled failures. Unknown metrics must be null with a reason. Evaluation
 owns denominator, identity grouping, family means and paired bootstrap; report code
