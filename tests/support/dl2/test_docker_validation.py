@@ -246,7 +246,8 @@ def test_response_digest_tampering_is_unknown():
     assert port.backend().validate(request())[0] is None
 
 
-@pytest.mark.parametrize("raw", [b"", b" " * 20, b"x" * 32769, b"\xff"])
+@pytest.mark.parametrize("raw", [b"", b" " * 20, b"x" * 32769, b"\xff"],
+                         ids=("empty", "whitespace", "over_32k", "invalid_utf8"))
 def test_invalid_byte_contract_never_reaches_registrar(raw):
     port = FakePort()
     assert port.backend().validate(request(raw))[0] is None
