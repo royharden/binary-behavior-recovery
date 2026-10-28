@@ -53,3 +53,11 @@ Runtime checks for existing/missing/unreadable DB, WAL/concurrent consistent
 snapshot, absence of schema/config changes and bounded corrupted rows are deferred.
 Builders have not opened any database. Read-only mode is SQLite connection policy;
 OS filesystem/WAL behavior remains unverified.
+
+Call-resource sidecars from FixtureDispatch join request_id/attempt/request digest to
+this report; they never supply replacement reserve/charge/status values. Missing
+provider rows retain an explicit reason, not synthetic zero usage. Existing scripted
+fixture zero usage is retained only from its exact authored row. Unexpected failures
+keep ledger disposition unchanged. Current dispatcher has no live transport or
+explicit retry implementation; the ledger retry API does not authorize another call.
+Shared M is one attempt, reused by R/P with zero new charge and no duplicate sidecar.

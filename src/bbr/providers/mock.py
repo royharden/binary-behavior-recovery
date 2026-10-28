@@ -5,7 +5,7 @@ from dataclasses import asdict, dataclass
 from hashlib import sha256
 import json
 from pathlib import Path
-from typing import Any, Mapping, Sequence
+from typing import Any, Callable, Mapping, Sequence
 
 
 class ProviderError(ValueError):
@@ -124,7 +124,8 @@ class MockProvider:
     def propose(self, visible_task: Any, history: Sequence[Mapping[str, Any]],
                 model_config: ModelConfig, reservation: Any, *,
                 evidence_json: bytes | None = None,
-                artifact_sha256: str | None = None) -> Any:
+                artifact_sha256: str | None = None,
+                record_sink: Callable[[Mapping[str, Any]], None] | None = None) -> Any:
         from bbr.contracts import CandidateResponse
 
         if model_config.origin != "fixture" or model_config.endpoint_id != "offline":
@@ -141,6 +142,10 @@ class MockProvider:
         row = self._fixtures.get(digest)
         if row is None or canonical(row["request"]) != canonical(request):
             raise ProviderError("no exact public scripted request")
+        if record_sink is not None:
+            # Retain the EXACT authored fixture before response validation. A
+            # schema refusal is still a retained provider record, not success.
+            record_sink(json.loads(canonical(row)))
         try:
             response = CandidateResponse.model_validate_json(canonical(row["response"]))
         except (ValueError, TypeError) as exc:
