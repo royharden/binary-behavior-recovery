@@ -107,3 +107,38 @@ the full envelope while runtime validation remains deferred.
 The public profile recognizes printable runs of at least four retained bytes. Custom
 extractor profiles that omit such runs without a truncation disclosure are rejected;
 the envelope never upgrades omitted evidence into an untruncated claim.
+
+Generic input policy source lives only in `bbr.corpus.input_plan`. Its pure API is
+`plan_inputs(domain: Domain, *, seed: bytes, reserved_private=()) -> InputPlan` and
+`encode_plan(plan, codec, *, seed) -> EncodedInputPlan`. It requires32 caller seed
+bytes, exact public Domain (no FamilySpec/source fields), width8/16, arity1..8 and
+at most1024 distinct caller-owned private boundaries. Finite capacity exactly256
+uses8 visible/64 public/184 private, with reserved boundaries kept private. Ordinary
+capacity must be at least328+B and yields8/64/(256+B), where B is reserved boundaries.
+Other capacities fail; population sizes never silently shrink.
+
+Ordinary private recipes contain128 stratified valid rank draws and128 independent
+labelled width-shaped little-endian byte draws mapped into the public range. After
+deduplication/excluding reserved boundaries, seeded cyclic top-up fills256 distinct
+nonreserved private values. A separate bounded pool supplies visible/public values
+outside private. The existing `deterministic_partition` orders/selects these pools;
+no competing partition algorithm was added. Top-up attempts are bounded by target
+plus excluded count; large domains are never exhaustively enumerated. SHA256 counter
+labels/version and modulo mapping are fixed; no IID/unbiased sampling claim is made.
+
+`InputPlan.commitment()` pins complete recipe/domain/seed commitment and canonical
+pools; `summary()` returns hashes/counts/limitations without raw seeds or private
+values. All three codecs inherit the same canonical partitions. `encode_plan` checks
+the supplied seed/recipe, creates codec-specific16 public/32 private malformed byte
+inputs in at most288 attempts, checks actual invalidity with codec+Domain, and calls
+the existing `audit_partitions` for raw/decoded uniqueness/disjointness and finite
+coverage. Its `partitions` are existing InputPartition objects; `public_inputs` exposes
+only64 valid+16 malformed probe inputs. Never pass a complete private-bearing plan
+to model/provider. Byte pools are task/codec-scoped; canonical valid pools are shared.
+
+This is SOFTWARE SOURCE, not a generated/admitted/sealed or independently authored
+corpus. Builders did not invoke these functions, choose/materialize actual seeds,
+boundary values, manifests, inputs or expected answers. An independently appointed
+custodian must choose and commit actual held-out data only after engine freeze.
+Factory behavior, capacity failures, codec inheritance, malformed rejection and audit
+integration remain runtime-unverified; no data or execution certificate is claimed.
