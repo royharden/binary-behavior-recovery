@@ -101,6 +101,44 @@ is supplied it adds its `model_bindings` path/raw-SHA256 pair and canonical
 `model_bindings_sha256` pin. The source commitment is SHA256 of this sorted-key,
 compact, ASCII-escaped JSON object; every pass reference uses that same digest.
 
+## Strata and domain analyses
+
+Closed `bbr.scoring-bundle.v4` has the original scoring fields plus
+`resource_sources` and `domain_sources`, each an inventory path or null. It produces
+`bbr.report.v5` with `strata` and `domains`; `resources` is present only when supplied.
+Earlier bundle/report combinations retain their original score-only/resource behavior
+and rendered bytes. The verifier recomputes every supplied extension and compares the
+entire JSON authority and escaped views; absent domain data is explicitly not supplied.
+
+Strata uses actual `evaluation.strata.summarize_strata` on the same retained rows,
+partitions and ALL-final-campaign receipt as the verified score. Its expected hash is
+`evaluation.preregister.digest` of exactly the base score fields:
+`registration_sha256`, `partitions_sha256`, `campaign_lock_sha256`, `origin`,
+`complete`, `rows`, `summaries`, `verification`. Later paired-difference and claim-limit
+fields are excluded. Six tables preserve origin/model/arm and scheduled nominal rows:
+model/arm, family, codec, compiler, optimization and tier. HTML/Markdown display only
+producer values, including n/N, unknowns and scorer-owned primary estimates; no new
+estimator, rate denominator or bootstrap is introduced by rendering.
+
+The domain source manifest is closed `bbr.domain-sources.v1` with `entries` (at most
+one per nominal final key). Each descriptor has exactly `domain`, `domain_policy`,
+`binding`, `expected_binding_sha256`, `observed_probes`, `records`. All source fields
+except the expected hash are bounded data inventory paths or null. The expected hash
+is a separate trusted canonical binding commitment, supplied outside the binding
+object; it is never inferred from its raw file SHA or an embedded self-assertion.
+The raw inventory hash is retained independently. Shared policy/domain files may be
+referenced by several descriptors; duplicate bound candidate identities refuse.
+
+The consumer validates supplied file hashes/types and calls the actual
+`evaluation.domain_certificate.summarize_domain` with explicit keywords and the same
+verified partitions/lock receipt. Missing data stays null/not qualified; no values,
+records, samples or expected outcomes are generated. That producer owns full-domain
+qualification, observed/public-but-unobserved accounting and precommitted calibration.
+`exhaustive_on_declared_domain` covers exactly 256 supplied canonical valid values,
+not arbitrary stdin strings or the primary private184 score. Calibration events are
+retained separately and never promoted to a population rate. Structural commitments
+do not authenticate original execution, independent custody or admission.
+
 Numeric authority is JSON. Do not populate live rows from fixtures, combine models
 or drop scheduled failures. Unknown metrics must be null with a reason. Evaluation
 owns denominator, identity grouping, family means and paired bootstrap; report code
