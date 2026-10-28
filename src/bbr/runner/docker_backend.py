@@ -158,6 +158,7 @@ def build_create_argv(config: DockerBackendConfig, request: ExecutionRequest,
             "--ulimit", f"cpu={limits.cpu_seconds}:{limits.cpu_seconds}",
             "--ulimit", "core=0:0", "--no-healthcheck", "--restart=no",
             "--log-driver=none", "--workdir=/", "--interactive",
+            "--tmpfs", "/tmp:rw,noexec,nosuid,size=16777216",
             "--mount", f"type=bind,source={artifact_path},target={ARTIFACT},readonly",
             "--entrypoint", config.env_executable]
     for key, value in _labels(config).items():

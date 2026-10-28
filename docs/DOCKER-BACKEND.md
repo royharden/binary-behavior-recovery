@@ -106,8 +106,11 @@ network `none`, no published ports, read-only root, all capabilities dropped,
 `no-new-privileges`, PID limit one, no healthcheck/restart, no persistent logs,
 one CPU and CPU rlimit from `ExecutionLimits`. Memory and total memory-plus-swap
 both equal the requested memory limit, never above 256 MiB. No home directory,
-Docker socket, credentials, source trees, other artifacts or temporary writable
-mounts are provided. Docker image-defined anonymous volumes are rejected.
+Docker socket, credentials, source trees or other artifacts are provided. The
+only requested writable filesystem mount is the fixed 16 MiB `/tmp` tmpfs,
+created with `rw,noexec,nosuid,size=16777216`; the root remains read-only and the
+artifact bind remains read-only. This tmpfs has no configuration or subject-argv
+override. Docker image-defined anonymous volumes are rejected.
 
 The image entrypoint is replaced with the attested `env` executable and `-i`.
 Only `request.environment` reaches the subject; image and host candidate
