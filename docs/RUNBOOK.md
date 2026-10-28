@@ -52,6 +52,28 @@ pending independent admission, isolated backends and verified leak/token control
 Demo always prints
 **SCRIPTED FIXTURE / NO LIVE MODEL RESULT** and never invents observations.
 
+`run --arm S|M|R|P --journey-config FILE` and `demo --mock --journey-config FILE`
+use the actual `bbr.arms.fixture_journey.run_fixture_task` source driver. This is
+mutually exclusive with the earlier `--config` preflight. Closed config schema
+`bbr.fixture-journey.v1` requires `origin` (`fixture`), actual `campaign_id`, relative
+`artifact` and `artifact_sha256`, public `visible_task`, three `fixed_batches` of eight
+canonical public-pool hex inputs, `limits`, `fixture_records` and `model_config`.
+The last two may be null. Supplied fixtures use a relative path/raw-SHA descriptor
+to an actual authored public JSON array (1..7 records, <=4 MiB); no records are
+invented. A supplied model config has exactly the producer's five fields and must
+remain fixture/offline. No config string becomes a backend, import or callback.
+
+The ordinary CLI supplies no `FixtureDependencies`; the producer returns unavailable
+with zero dispatch and exit2. Later authorized trusted Python composition may supply
+actual existing Ledger, separate admitted Runner objects, CandidateValidator,
+candidate registration and receipt sink through the local composition dataclass.
+The single driver owns S/controls/M/R/P logic and retains all task locks, partial
+unknowns and resource receipts. `--arm` is a view label on this complete one-task
+driver result; it does not filter costs or create separate model calls. A local
+`fixture_candidates_locked` result can yield exit0 for that local source task only.
+It never supplies ALL-final-campaign locks, hidden-scoring permission, a successful
+benchmark or fresh binary parity. No driver or dependencies are invoked by builders.
+
 Later activation order:
 
 1. Obtain Roy's independent appointment/rights decisions and admission receipts.

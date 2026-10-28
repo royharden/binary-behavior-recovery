@@ -142,16 +142,22 @@ def build_report(root: Path, evidence_paths: list[str], summary: dict[str, Any],
     bundle_fields = {"schema", "registration", "partitions", "campaign_receipt", "row_shards"}
     if not isinstance(bundle, dict) or not isinstance(bundle.get("schema"), str):
         raise ReportError("closed frozen scoring bundle required")
-    has_resources = bundle["schema"] == "bbr.scoring-bundle.v3"
-    if has_resources:
+    has_analysis = bundle["schema"] == "bbr.scoring-bundle.v4"
+    has_resources = bundle["schema"] == "bbr.scoring-bundle.v3" or (
+        has_analysis and bundle.get("resource_sources") is not None)
+    if has_resources or has_analysis:
         bundle_fields.add("resource_sources")
-    if bundle["schema"] not in {"bbr.scoring-bundle.v2", "bbr.scoring-bundle.v3"} or set(bundle) != bundle_fields:
+    if has_analysis:
+        bundle_fields.add("domain_sources")
+    if bundle["schema"] not in {"bbr.scoring-bundle.v2", "bbr.scoring-bundle.v3", "bbr.scoring-bundle.v4"} or set(bundle) != bundle_fields:
         raise ReportError("unsupported or nonclosed scoring bundle")
     if not isinstance(bundle["row_shards"], list) or not bundle["row_shards"] or any(not isinstance(p, str) for p in bundle["row_shards"]):
         raise ReportError("nonempty retained row-shard list required")
     references = [bundle["partitions"], bundle["campaign_receipt"], *bundle["row_shards"]]
     if has_resources:
         references.append(bundle["resource_sources"])
+    if has_analysis and bundle["domain_sources"] is not None:
+        references.append(bundle["domain_sources"])
     if any(not isinstance(p, str) for p in references) or len(references) != len(set(references)) or scoring_bundle in references or any(p not in files for p in references):
         raise ReportError("unique bundle inputs must be retained in evidence inventory")
     if any(p in replay_records for p in references):
@@ -172,11 +178,36 @@ def build_report(root: Path, evidence_paths: list[str], summary: dict[str, Any],
         if not isinstance(shard, list) or len(shard) + len(rows) > len(registration.final_keys):
             raise ReportError("bounded retained row-shard arrays required")
         rows.extend(shard)
+    partitions_data = read_json(files[bundle["partitions"]])
+    receipt_data = read_json(files[bundle["campaign_receipt"]])
     recomputed = scorer.retained_report(registration, rows,
-        partitions=read_json(files[bundle["partitions"]]),
-        campaign_receipt=read_json(files[bundle["campaign_receipt"]]))
+        partitions=partitions_data, campaign_receipt=receipt_data)
     if canonical(recomputed) != canonical(summary):
         raise ReportError("summary differs from retained-observation recomputation")
+    strata_summary = None
+    domains_summary = None
+    if has_analysis:
+        try:
+            strata = importlib.import_module("evaluation.strata")
+        except ImportError as error:
+            raise ReportError("retained strata producer unavailable") from error
+        base_keys = {"registration_sha256", "partitions_sha256", "campaign_lock_sha256",
+                     "origin", "complete", "rows", "summaries", "verification"}
+        base_score = {key: recomputed[key] for key in base_keys}
+        strata_summary = strata.summarize_strata(registration, rows,
+            partitions=partitions_data, campaign_receipt=receipt_data,
+            expected_score_sha256=preregister.digest(base_score))
+        if bundle["domain_sources"] is None:
+            domains_summary = {"status": "not_supplied", "source_recomputed": False,
+                "reason": "No retained domain sources supplied; no certificate/calibration asserted.",
+                "summaries": []}
+        else:
+            from .domain_join import recompute_domains
+            domains_summary = recompute_domains(root,
+                read_json(files[bundle["domain_sources"]]), files=files,
+                inventory={entry["path"]: entry for entry in entries},
+                registration=registration, partitions=partitions_data,
+                campaign_receipt=receipt_data)
     resource_summary = None
     if has_resources:
         from .resource_join import recompute_resources
@@ -193,32 +224,73 @@ def build_report(root: Path, evidence_paths: list[str], summary: dict[str, Any],
     if any(_file_hash(safe_file(root, e["path"], max_bytes=ceilings[e["path"]]),
                       ceilings[e["path"]]) != e["sha256"] for e in entries):
         raise ReportError("evidence changed during recomputation")
-    body = {"schema": "bbr.report.v4" if has_resources else "bbr.report.v3", "campaign_id": campaign_id,
+    body = {"schema": "bbr.report.v5" if has_analysis else "bbr.report.v4" if has_resources else "bbr.report.v3", "campaign_id": campaign_id,
             "origin": origin, "label": BANNER if origin == "fixture" else "LIVE RETAINED EVIDENCE",
             "verification_scope": "retained-evidence consistency only",
             "runtime_validation": "unverified", "evidence": entries,
             "scoring_bundle": scoring_bundle, "summary": summary}
     if has_resources:
         body["resources"] = resource_summary
+    if has_analysis:
+        body["strata"] = strata_summary
+        body["domains"] = domains_summary
     canonical(body)  # Reject non-JSON/non-finite values before writing anything.
     return {**body, "body_sha256": digest(canonical(body))}
 
 
+def _markdown_data(value: str) -> str:
+    return "".join(f"&#{ord(c)};" if not c.isalnum() and c != " " else c for c in value)
+
+
+def _strata_views(report: dict[str, Any]) -> list[tuple[str, list[str], list[dict]]]:
+    if "strata" not in report:
+        return []
+    strata = report["strata"]
+    if not isinstance(strata, dict) or strata.get("schema") != "bbr.strata.v1" or not isinstance(strata.get("tables"), dict):
+        raise ReportError("supported strata tables required for rendering")
+    output = []
+    dimensions = ("origin", "model", "arm", "family_id", "codec", "compiler", "optimization", "tier")
+    metrics = ["scheduled", "nominal_valid_pass", "visible_pass", "malformed_pass",
+               "primary_identity_group_estimate", "primary_identity_group_reason", "unknown_rows", "status_counts"]
+    for name in ("by_model_arm", "by_family", "by_codec", "by_compiler", "by_optimization", "by_tier"):
+        rows = strata["tables"].get(name)
+        if not isinstance(rows, list) or any(not isinstance(row, dict) for row in rows):
+            raise ReportError("strata table row list required")
+        columns = [key for key in dimensions if any(key in row for row in rows)] + metrics
+        output.append((name, columns, rows))
+    return output
+
+
+def _cell(value: Any) -> str:
+    return value if isinstance(value, str) else canonical(value).decode("ascii")
+
+
 def render_markdown(report: dict[str, Any]) -> str:
-    # HTML entities protect Markdown delimiters, links, raw HTML and fenced code.
-    def escape(value: str) -> str:
-        return "".join(f"&#{ord(c)};" if not c.isalnum() and c != " " else c for c in value)
-    return ("# Binary behavior recovery\n\n" + escape(report["label"]) +
+    tables = ""
+    for name, columns, rows in _strata_views(report):
+        tables += "\n\n## " + name + "\n\n| " + " | ".join(columns) + " |\n"
+        tables += "| " + " | ".join("---" for _ in columns) + " |\n"
+        for row in rows:
+            tables += "| " + " | ".join(_markdown_data(_cell(row.get(key))) for key in columns) + " |\n"
+    return ("# Binary behavior recovery\n\n" + _markdown_data(report["label"]) +
             "\n\nRetained-evidence consistency only; runtime unverified.\n\n" +
-            escape(canonical(report).decode("ascii")) + "\n")
+            (tables + "\n\n" if tables else "") +
+            _markdown_data(canonical(report).decode("ascii")) + "\n")
 
 
 def render_html(report: dict[str, Any]) -> str:
+    tables = ""
+    for name, columns, rows in _strata_views(report):
+        tables += "<h2>" + html.escape(name) + "</h2><table><thead><tr>"
+        tables += "".join("<th>" + html.escape(key) + "</th>" for key in columns) + "</tr></thead><tbody>"
+        for row in rows:
+            tables += "<tr>" + "".join("<td>" + html.escape(_cell(row.get(key))) + "</td>" for key in columns) + "</tr>"
+        tables += "</tbody></table>"
     return ("<!doctype html><html lang=\"en\"><meta charset=\"utf-8\">"
             "<meta http-equiv=\"Content-Security-Policy\" content=\"default-src 'none'; style-src 'none'\">"
             "<title>Binary behavior recovery</title><h1>Binary behavior recovery</h1><p>" +
             html.escape(report["label"]) + "</p><p>Retained-evidence consistency only; "
-            "runtime unverified.</p><pre>" + html.escape(canonical(report).decode("ascii")) +
+            "runtime unverified.</p>" + tables + "<pre>" + html.escape(canonical(report).decode("ascii")) +
             "</pre></html>\n")
 
 
@@ -239,9 +311,11 @@ def verify_report(report_path: Path, evidence_root: Path) -> dict[str, Any]:
               "runtime_validation", "evidence", "scoring_bundle", "summary", "body_sha256"}
     if not isinstance(report, dict) or not isinstance(report.get("schema"), str):
         raise ReportError("unsupported report schema")
-    if report["schema"] == "bbr.report.v4":
+    if report["schema"] == "bbr.report.v4" or (report["schema"] == "bbr.report.v5" and "resources" in report):
         fields.add("resources")
-    if set(report) != fields or report["schema"] not in {"bbr.report.v3", "bbr.report.v4"}:
+    if report["schema"] == "bbr.report.v5":
+        fields.update({"strata", "domains"})
+    if set(report) != fields or report["schema"] not in {"bbr.report.v3", "bbr.report.v4", "bbr.report.v5"}:
         raise ReportError("unsupported report schema")
     body = {k: v for k, v in report.items() if k != "body_sha256"}
     if digest(canonical(body)) != report["body_sha256"]:
@@ -272,7 +346,9 @@ def verify_report(report_path: Path, evidence_root: Path) -> dict[str, Any]:
     return {"status": "retained_evidence_consistent", "fresh_execution": False,
             "runtime_validation": "unverified", "files_checked": len(report["evidence"]),
             "origin": report["origin"], "summary_recomputed": True,
-            "resources_recomputed": report["schema"] == "bbr.report.v4",
-            "resource_status": "retained_sources_recomputed" if report["schema"] == "bbr.report.v4"
+            "resources_recomputed": "resources" in report,
+            "resource_status": "retained_sources_recomputed" if "resources" in report
                                else "not_supplied_score_only",
+            "strata_recomputed": report["schema"] == "bbr.report.v5",
+            "domains_recomputed": report.get("domains", {}).get("source_recomputed", False),
             "reason": "Metrics recomputed from retained observations; no fresh execution or authenticity claim."}
