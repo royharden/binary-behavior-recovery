@@ -13,15 +13,18 @@ from threading import Barrier
 import pytest
 
 from bbr.arms.fixture_journey import run_fixture_task
+from bbr.arms.baselines import VisiblePair, enumerate_baseline
 from bbr.arms.interventions import (ArmArchive, InfrastructureUnknown, ProbeBroker,
                                     Submission, run_interventions, validate_submission)
 from bbr.ledger import BudgetStop, Ledger, read_report
 from bbr.providers.dispatch import FixtureDispatch, ReceiptSinkError
 from bbr.providers.mock import (MockProvider, ModelConfig, ProviderError,
-                               ProviderUnavailable, canonical, live_provider)
+                               ProviderUnavailable, canonical, live_provider,
+                               prepare_request, request_digest)
 from bbr.report.resource_metrics import summarize_resources
-from support.dl3.software_fixtures import (CAMPAIGN_ID, SOURCE_A, SOURCE_B,
-    VALIDATION_DIAGNOSTIC, fixture_row, response, seven_scripted_rows, software_case, software_ports)
+from support.dl3.software_fixtures import (CAMPAIGN_ID, SOURCE_A, SOURCE_B, SoftwareClock,
+    SOFTWARE_IDENTITY_IO, SOFTWARE_INCREMENT_IO, VALIDATION_DIAGNOSTIC,
+    fixture_row, response, seven_scripted_rows, software_case, software_ports)
 
 
 def digest(label):
@@ -32,6 +35,14 @@ def dispatcher(case, ledger, rows, **kwargs):
     return FixtureDispatch(case.task.task_id, case.task, MockProvider(rows), ledger, case.config,
         campaign_id=CAMPAIGN_ID, evidence_json=case.evidence_json,
         artifact_sha256=case.artifact_sha256, **kwargs)
+
+
+@pytest.fixture
+def frozen_software_clock(monkeypatch):
+    """Host scheduling must not decide whether the software S source is found."""
+    clock = SoftwareClock()
+    monkeypatch.setattr("bbr.arms.baselines.monotonic", clock)
+    return clock
 
 
 def test_ledger_reopen_exact_decimal_and_idempotent_settlement(tmp_path):
@@ -169,8 +180,13 @@ def digest_bytes(raw):
     return sha256(raw).hexdigest()
 
 
-@pytest.mark.parametrize("change", ["missing", "artifact", "noncanonical", "bundle_digest", "config"])
-def test_mock_refuses_missing_changed_or_mismatched_full_evidence(change):
+@pytest.mark.parametrize("change, reason", [
+    ("missing", "full canonical public evidence required, at most 48 KiB"),
+    ("artifact", "invalid public evidence envelope"),
+    ("noncanonical", "invalid public evidence envelope"),
+    ("bundle_digest", "invalid public evidence envelope"),
+])
+def test_mock_refuses_invalid_full_evidence_before_lookup(change, reason):
     case = software_case()
     provider = MockProvider([fixture_row(case)])
     evidence, artifact, task, config = case.evidence_json, case.artifact_sha256, case.task, case.config
@@ -182,12 +198,39 @@ def test_mock_refuses_missing_changed_or_mismatched_full_evidence(change):
         evidence += b"\n"
     elif change == "bundle_digest":
         task = task.model_copy(update={"evidence_sha256": digest("different bundle")})
-    else:
-        config = ModelConfig(seed=1)
     original = fixture_row(case)["request_sha256"]
-    with pytest.raises(ProviderError):
+    with pytest.raises(ProviderError, match="^" + reason + "$"):
         provider.propose(task, [], config, {"request_sha256": original},
                          evidence_json=evidence, artifact_sha256=artifact)
+
+
+@pytest.mark.parametrize("change", ["config", "full_public_envelope"])
+def test_mock_refuses_valid_unscripted_request_with_matching_new_reservation(change):
+    original = software_case()
+    row = fixture_row(original)
+    if change == "config":
+        changed = software_case(config=ModelConfig(seed=1))
+    else:
+        # Authored SOFTWARE bytes only: a valid producer envelope with a new
+        # bundle/task digest, the same task/artifact IDs, and no ELF truth claim.
+        changed = software_case(text_bytes=b"\x01\x02\x03\x05")
+        assert changed.evidence_json != original.evidence_json
+        assert changed.task.evidence_sha256 != original.task.evidence_sha256
+        assert changed.artifact_sha256 == original.artifact_sha256
+    assert changed.task.task_id == original.task.task_id
+    request = prepare_request(changed.task, [], changed.config,
+        evidence_json=changed.evidence_json, artifact_sha256=changed.artifact_sha256)
+    changed_digest = request_digest(request)
+    assert request != row["request"] and changed_digest != row["request_sha256"]
+    retained = []
+    provider = MockProvider([row])
+    # The NEW digest passes reservation binding. A task-ID/fuzzy fixture lookup
+    # regression must therefore reach (and fail) the exact-lookup assertion.
+    with pytest.raises(ProviderError, match="^no exact public scripted request$"):
+        provider.propose(changed.task, [], changed.config,
+            {"request_sha256": changed_digest}, evidence_json=changed.evidence_json,
+            artifact_sha256=changed.artifact_sha256, record_sink=retained.append)
+    assert retained == []
 
 
 def test_schema_failure_retains_exact_record_and_missing_record_has_reason(tmp_path):
@@ -337,6 +380,53 @@ def test_lock_and_failure_receipts_are_recursively_immutable_and_exports_detache
     assert failure.snapshot()["attempted_response"]["code"] == SOURCE_A
 
 
+@pytest.mark.parametrize("cap, expected_status, expected_count, expected_expression", [
+    (9, "baseline_abstain_budget", 9, None),
+    (10, "fit_visible_only", 10, (("add", 1),)),
+])
+def test_s_candidate_budget_stops_before_next_candidate_but_allows_last_slot(
+        cap, expected_status, expected_count, expected_expression, frozen_software_clock):
+    # In the frozen generic grammar, identity + seven structural steps + add(0)
+    # precede add(1). These literal SOFTWARE pairs reject those first nine.
+    pairs = tuple(VisiblePair(raw, expected) for raw, expected in SOFTWARE_INCREMENT_IO)
+    result = enumerate_baseline(pairs, codec="dec", width=8, input_arity=1,
+        output_arity=1, max_candidates=cap)
+    assert result.status == expected_status and result.enumerated == expected_count
+    assert result.expression == expected_expression
+    assert (result.code is None) == (cap == 9)
+    assert result.elapsed == 0.0 and frozen_software_clock.calls > 0
+    # Any returned candidate is source DATA only; never compile/import/execute it.
+
+
+@pytest.mark.parametrize("readings, expected_count", [
+    ((0.0, 2.0), 0),  # start, first candidate boundary at the exact time ceiling
+    ((0.0, 0.0, 0.0, 2.0), 1),  # expire during identity's visible matching
+    ((0.0,) * 10 + (2.0,), 1),  # start + candidate + eight matches, then source boundary
+], ids=["before_candidate", "during_visible_matching", "after_source_construction"])
+def test_s_time_budget_abstains_at_exact_deadline_without_returning_source(
+        readings, expected_count, monkeypatch):
+    clock = SoftwareClock(readings)
+    monkeypatch.setattr("bbr.arms.baselines.monotonic", clock)
+    pairs = tuple(VisiblePair(raw, expected) for raw, expected in SOFTWARE_IDENTITY_IO)
+    result = enumerate_baseline(pairs, codec="dec", width=8, input_arity=1,
+        output_arity=1, max_candidates=10_000, seconds=2.0)
+    assert result.status == "baseline_abstain_budget"
+    assert result.enumerated == expected_count and result.elapsed == 2.0
+    assert result.code is None and result.expression is None
+    # Scripted clock readings test stop control flow; elapsed is not a measurement.
+
+
+@pytest.mark.parametrize("overrides", [
+    {"max_candidates": 0}, {"max_candidates": 10_001},
+    {"seconds": 0.0}, {"seconds": 2.001},
+])
+def test_s_rejects_limits_outside_frozen_search_envelope(overrides, frozen_software_clock):
+    pairs = tuple(VisiblePair(raw, expected) for raw, expected in SOFTWARE_IDENTITY_IO)
+    with pytest.raises(ValueError, match="^requires eight pairs and bounded search$"):
+        enumerate_baseline(pairs, codec="dec", width=8, **overrides)
+    assert frozen_software_clock.calls == 0
+
+
 def task_kwargs(case, ledger=None, **extra):
     return dict(campaign_id=CAMPAIGN_ID, artifact_sha256=case.artifact_sha256,
         evidence_json=case.evidence_json, fixed_batches=case.fixed,
@@ -356,7 +446,8 @@ def test_orchestrator_defaults_unavailable_zero_dispatch_without_ledger_init(mon
     assert result["resource_receipts"] == [] and result["hidden_scoring"] == "not_performed"
 
 
-def test_orchestrator_scripted_ports_join_all_receipts_without_candidate_execution(tmp_path):
+def test_orchestrator_scripted_ports_join_all_receipts_without_candidate_execution(
+        tmp_path, frozen_software_clock):
     case = software_case()
     ledger = Ledger(tmp_path / "journey.sqlite")
     ports, doubles = software_ports()
@@ -365,6 +456,8 @@ def test_orchestrator_scripted_ports_join_all_receipts_without_candidate_executi
     assert result["attempted_provider_calls"] == len(result["resource_receipts"]) == 7
     assert set(result["builder_locks"]) == {"S", "control:echo", "control:constant", "control:visible_lookup"}
     assert set(result["arm_locks"]) == {"M", "R", "P"}
+    assert result["baseline"]["status"] == "fit_visible_only"
+    assert result["baseline"]["enumerated"] == 1 and frozen_software_clock.calls > 0
     assert len(doubles[0].inputs) == len(doubles[1].inputs) == 24
     assert len(doubles[2].sources) == 11  # four builder-source + seven model DATA checks
     assert result["runtime_validation"] == "unverified" and result["hidden_scoring"] == "not_performed"
@@ -375,7 +468,8 @@ def test_orchestrator_scripted_ports_join_all_receipts_without_candidate_executi
     assert all(group["usd_per_pass"] is None for group in summary["groups"])
 
 
-def test_orchestrator_ledger_configuration_failure_is_unknown_not_seven_parsefails(tmp_path):
+def test_orchestrator_ledger_configuration_failure_is_unknown_not_seven_parsefails(
+        tmp_path, frozen_software_clock):
     case = software_case(task_id="t" * 180, config=ModelConfig(config_id="c" * 100))
     ledger = Ledger(tmp_path / "long-id.sqlite")
     ports, _ = software_ports()
@@ -386,7 +480,8 @@ def test_orchestrator_ledger_configuration_failure_is_unknown_not_seven_parsefai
     assert ledger.report()["attempts"] == []
 
 
-def test_orchestrator_sink_fault_preserves_exact_response_resource_sidecar(tmp_path):
+def test_orchestrator_sink_fault_preserves_exact_response_resource_sidecar(
+        tmp_path, frozen_software_clock):
     case = software_case()
     ledger = Ledger(tmp_path / "journey-sink.sqlite")
     ports, _ = software_ports()

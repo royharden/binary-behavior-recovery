@@ -18,6 +18,15 @@ SOURCE_A = "# authored software-test source A; DATA ONLY\npass\n"
 SOURCE_B = "# authored software-test source B; DATA ONLY\npass\n"
 VALIDATION_DIAGNOSTIC = "authored software port acknowledgment; not syntax/isolation proof"
 CAMPAIGN_ID = "authored-software-regression-campaign"
+# Hand-authored SOFTWARE I/O for the search controller, not task/reference truth.
+SOFTWARE_IDENTITY_IO = (
+    (b"0\n", b"0\n"), (b"1\n", b"1\n"), (b"2\n", b"2\n"), (b"3\n", b"3\n"),
+    (b"4\n", b"4\n"), (b"5\n", b"5\n"), (b"6\n", b"6\n"), (b"7\n", b"7\n"),
+)
+SOFTWARE_INCREMENT_IO = (
+    (b"0\n", b"1\n"), (b"1\n", b"2\n"), (b"2\n", b"3\n"), (b"3\n", b"4\n"),
+    (b"4\n", b"5\n"), (b"5\n", b"6\n"), (b"6\n", b"7\n"), (b"7\n", b"8\n"),
+)
 
 
 @dataclass(frozen=True)
@@ -32,10 +41,12 @@ class SoftwareCase:
         return tuple(tuple(self.task.probe_inputs[i:i + 8]) for i in (0, 8, 16))
 
 
-def software_case(*, task_id="authored-software-test-task", config=None):
+def software_case(*, task_id="authored-software-test-task", config=None,
+                  text_bytes=b"\x01\x02\x03\x04"):
     """Structural envelope and tiny public parser cases, NOT an actual ELF task."""
     artifact = sha256(b"authored software-test identifier; NOT AN ELF").hexdigest()
-    raw = b"\x01\x02\x03\x04"
+    # Tiny authored bytes exercise full-envelope identity, never ELF extraction.
+    raw = text_bytes
     bundle = EvidenceBundle(artifact, EXTRACTOR_VERSION,
         (SectionSlice(".text", 4096, 128, len(raw), sha256(raw).hexdigest(), raw.hex(), len(raw)),),
         (), ImportMetadata(False, None, 0, None, (), 0, 0, ("dynamic_table_absent",)),
@@ -49,6 +60,22 @@ def software_case(*, task_id="authored-software-test-task", config=None):
         codec="dec", domain=Domain(width=8, input_arity=1, output_arity=1, maximum=255),
         probe_inputs=pool, examples=examples)
     return SoftwareCase(task, envelope.canonical_json(), artifact, config or ModelConfig())
+
+
+class SoftwareClock:
+    """Scripted monotonic readings for SOFTWARE control flow, not timing evidence.
+
+    Repeat the final reading after the explicit timeline is consumed. A single
+    zero freezes S's search clock independently of host load/RAM pressure.
+    """
+    def __init__(self, readings=(0.0,)):
+        self.readings = readings
+        self.calls = 0
+
+    def __call__(self):
+        reading = self.readings[min(self.calls, len(self.readings) - 1)]
+        self.calls += 1
+        return reading
 
 
 def response(code=SOURCE_A, *, probes=(), abstain=False):
