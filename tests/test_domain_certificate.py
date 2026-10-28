@@ -223,7 +223,10 @@ def test_binding_pin_corruption_fails_with_recommitted_body(field):
     f = make_domain_fixture()
     f.arguments["binding"][field] = fixture_digest("wrong-pin")
     f.arguments["expected_binding_sha256"] = digest(f.arguments["binding"])
-    with pytest.raises(ValueError, match="pins mismatch"):
+    expected_cause = (
+        r"^observed probe identity/lock mismatch$" if field == "lock_sha256" else "pins mismatch"
+    )
+    with pytest.raises(ValueError, match=expected_cause):
         summarize(f)
 
 
