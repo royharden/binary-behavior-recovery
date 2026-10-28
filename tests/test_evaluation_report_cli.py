@@ -214,7 +214,7 @@ def test_candidate_identity_and_frozen_input_substitution_refuse(patterned_matri
     row = deepcopy(rows[index])
     row["candidate_sha256"] = "f" * 64
     rows[index] = row
-    with pytest.raises(ValueError, match="final lock"):
+    with pytest.raises(ValueError, match="final candidate lock"):
         _score(patterned_matrix, rows)
     row["candidate_sha256"] = patterned_matrix.rows[index]["candidate_sha256"]
     row["cases"][0]["canonical_key"] = "software-key-not-in-frozen-pool"
