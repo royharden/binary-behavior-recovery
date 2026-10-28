@@ -1,5 +1,5 @@
 [build-system]
-requires = ["hatchling>=1.25,<2"]
+requires = ["hatchling==1.27.0"]
 build-backend = "hatchling.build"
 
 [project]
@@ -7,7 +7,10 @@ name = "binary-behavior-recovery"
 version = "0.1.0"
 description = "Bounded, provenance-aware binary behavior recovery instrument"
 requires-python = ">=3.12"
-dependencies = ["pydantic>=2.8,<3"]
+dependencies = ["pydantic==2.12.3"]
+
+[dependency-groups]
+dev = ["pytest==8.4.2"]
 
 [project.scripts]
 bbr = "bbr.cli:main"
