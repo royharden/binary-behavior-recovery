@@ -1,7 +1,13 @@
 # One-task fixture source driver
 
-Runtime unverified. This source has not been invoked by builders. No fixtures,
-database, inputs, observations or backend pins were materialized for this package.
+At the initial static construction checkpoint, this source was not invoked and no
+fixtures, database, inputs, observations or backend pins were materialized.
+Round 2's explicit software-test exception now exercises unavailable and scripted
+worker-port paths using authored software fixtures and temporary SQLite databases.
+These checks never execute candidate source or establish admitted sandbox, original
+ELF/corpus truth, independence, live behavior or benchmark performance. Real isolated
+worker validation and corpus admission remain pending. See the owned regression
+suite in `tests/test_providers_ledger_arms.py`; fake-policy digests are test IDs only.
 
 `from bbr.arms.fixture_journey import run_fixture_task`
 
@@ -57,6 +63,9 @@ all retained resource/scoring sources to archive inventory hashes and preserve
 fixture/live separation. Do not interpret a driver result as a96-task benchmark,
 custodian appointment or independent admission.
 
+The initial deferred list below remains the broader activation scope; selected
+software regression cases are now checked under the Round 2 exception, without
+converting fake-worker acknowledgments into runtime isolation evidence.
 Deferred: actual admitted fixture/backend/ledger invocation; malformed/public-pool
 and evidence refusals; missing/default backend states; S/controls codec/validation
 parity; seven-call/48-slot and last-valid behavior; pre-dispatch ledger/config faults

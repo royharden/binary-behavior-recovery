@@ -1,5 +1,14 @@
 # Recovery construction API
 
+Round 2 permits selected software regression execution beyond the original static
+checkpoint described below. The owned test suite now checks temporary SQLite,
+exact fixture matching, intervention/receipt control flow and scripted worker-port
+joins. All fixture data and clocks are authored software tests, not independent
+corpus, real ELF truth, measured candidate performance or admitted worker evidence.
+Candidate source is never compiled/imported/executed on the host. Original deferred
+lists describe the broader activation gates; selected software cases do not clear
+sandbox, custody, hidden-campaign, live-model or publication requirements.
+
 SEAM-005 retained resources: `FixtureDispatch(..., campaign_id=<opaque ID>,
 receipt_sink=None)` now requires explicit campaign identity. After each successful
 durable mark_sent, it retains exactly one closed `bbr.call-resource.v1` receipt on
