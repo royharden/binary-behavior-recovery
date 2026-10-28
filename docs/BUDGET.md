@@ -51,7 +51,12 @@ schema/permission failures remain explicit errors, never an empty success report
 Do not use Ledger(path).report() in a read-only CLI: constructing Ledger initializes.
 Runtime checks for existing/missing/unreadable DB, WAL/concurrent consistent
 snapshot, absence of schema/config changes and bounded corrupted rows are deferred.
-Builders have not opened any database. Read-only mode is SQLite connection policy;
+No database was opened during initial static construction. Round 2's authorized
+software regressions now exercise real temporary SQLite reserve/reopen/cap,
+two-thread concurrency, unknown/retry and read-only reporting cases; these are
+simulated ledger amounts, not actual spending. OS crash/power-loss durability,
+broader WAL behavior and production permissions remain unproved.
+Read-only mode is SQLite connection policy;
 OS filesystem/WAL behavior remains unverified.
 
 Call-resource sidecars from FixtureDispatch join request_id/attempt/request digest to
