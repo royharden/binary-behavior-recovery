@@ -231,6 +231,33 @@ def test_docker_argv_is_offline_bounded_and_role_separate_without_start(tmp_path
     assert ("-I" in args) is (role == "candidate")
 
 
+@pytest.mark.parametrize("role", ["oracle", "candidate"])
+def test_docker_argv_has_one_frozen_tmpfs_and_readonly_artifact_without_overrides(tmp_path, role):
+    # Regression: /tmp must remain the exact bounded writable mount while
+    # Docker-looking subject arguments cannot override create-time controls.
+    from bbr.runner.docker_backend import ARTIFACT, RUN_ROOT, build_create_argv
+    from bbr.runner.policy import ExecutionRequest
+    config = software_docker_config(tmp_path, role)
+    subject_args = ("--tmpfs", "/tmp:rw,exec,size=33554432", "--mount",
+                    "type=tmpfs,target=/tmp", "--read-only=false")
+    request = ExecutionRequest(fixture_sha("symbolic-artifact"), b"", ExecutionLimits(),
+                               policy(role), subject_args, ())
+    artifact_path = RUN_ROOT / role / request.artifact_sha256
+    args = build_create_argv(config, request, artifact_path)
+    create_args = args[:args.index(f"sha256:{config.image_sha256}")]
+    tmpfs_mounts = [create_args[index + 1] for index, arg in enumerate(create_args)
+                    if arg == "--tmpfs"]
+    bind_mounts = [create_args[index + 1] for index, arg in enumerate(create_args)
+                   if arg == "--mount"]
+    assert tmpfs_mounts == ["/tmp:rw,noexec,nosuid,size=16777216"]
+    assert bind_mounts == [f"type=bind,source={artifact_path},target={ARTIFACT},readonly"]
+    assert create_args.count("--read-only") == 1
+    assert "--read-only=false" not in create_args
+    assert not any(arg == "-v" or arg.startswith(("--volume", "--tmpfs=", "--mount="))
+                   for arg in create_args)
+    assert args[-len(subject_args) - 1:] == (ARTIFACT, *subject_args)
+
+
 def test_docker_config_placeholders_and_role_path_drift_refused(tmp_path):
     from bbr.runner.docker_backend import RUN_ROOT, build_create_argv
     from bbr.runner.policy import ExecutionRequest

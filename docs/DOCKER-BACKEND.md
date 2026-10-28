@@ -95,8 +95,12 @@ status, and invokes the canonical `agent-ports/scripts/ports.py check
 PROJECT/instance` using the explicitly configured Python. Nonzero, timeout or
 unknown refuses launch. A record with no ports can make that tool exit zero
 without live Docker checks, so it never replaces the mandatory live guard.
-Checks use bounded output and a five-second control deadline; a slow or busy
-machine refuses admission. The ports script can itself spawn bounded diagnostic
+Docker controls use bounded output and a five-second deadline. The canonical
+ports preflight has a separate bounded thirty-second control deadline because
+the observed read-only check takes about seventeen seconds on the current host.
+The subject/attach wall limit remains the frozen two seconds; no worker limit is
+extended by this preflight allowance. Any timeout still refuses admission. The
+ports script can itself spawn bounded diagnostic
 children; this adapter never kills unrelated processes to repair a slow check.
 
 ## Execution and observation
@@ -106,8 +110,11 @@ network `none`, no published ports, read-only root, all capabilities dropped,
 `no-new-privileges`, PID limit one, no healthcheck/restart, no persistent logs,
 one CPU and CPU rlimit from `ExecutionLimits`. Memory and total memory-plus-swap
 both equal the requested memory limit, never above 256 MiB. No home directory,
-Docker socket, credentials, source trees, other artifacts or temporary writable
-mounts are provided. Docker image-defined anonymous volumes are rejected.
+Docker socket, credentials, source trees or other artifacts are provided. The
+only requested writable filesystem mount is the fixed 16 MiB `/tmp` tmpfs,
+created with `rw,noexec,nosuid,size=16777216`; the root remains read-only and the
+artifact bind remains read-only. This tmpfs has no configuration or subject-argv
+override. Docker image-defined anonymous volumes are rejected.
 
 The image entrypoint is replaced with the attested `env` executable and `-i`.
 Only `request.environment` reaches the subject; image and host candidate
