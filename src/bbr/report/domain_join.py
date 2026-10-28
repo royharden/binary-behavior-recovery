@@ -13,7 +13,8 @@ from typing import Any
 
 def recompute_domains(root: Path, sources: dict, *, files: dict[str, Path],
                       inventory: dict[str, dict], registration: Any,
-                      partitions: dict, campaign_receipt: dict) -> dict:
+                      partitions: dict, campaign_receipt: dict,
+                      primary_rows: list[dict] | None = None) -> dict:
     """Delegate each bounded source descriptor to ``summarize_domain``.
 
     ``expected_binding_sha256`` is supplied separately from the binding file.
@@ -59,6 +60,29 @@ def recompute_domains(root: Path, sources: dict, *, files: dict[str, Path],
         return read_json(path)
 
     registration.validate()
+    primary_observations = None
+    checked_primary = 0
+    if primary_rows is not None:
+        if not isinstance(primary_rows, list):
+            raise ReportError("retained primary row list required")
+        primary_observations = {}
+        for row in primary_rows:
+            closed(row, {"task_id", "model", "arm", "candidate_sha256", "status", "cases"},
+                   "retained primary row")
+            if row["status"] != "candidate":
+                continue
+            identity = tuple(row[name] for name in ("task_id", "model", "arm", "candidate_sha256"))
+            if any(not isinstance(value, str) for value in identity) or not isinstance(row["cases"], list):
+                raise ReportError("retained primary candidate identity/cases required")
+            for case in row["cases"]:
+                closed(case, {"partition", "input_hex", "canonical_key", "oracle", "candidate"},
+                       "retained primary observation")
+                if not isinstance(case["input_hex"], str):
+                    raise ReportError("retained primary input hex required")
+                key = (*identity, case["input_hex"])
+                if key in primary_observations:
+                    raise ReportError("duplicate retained primary observation")
+                primary_observations[key] = (case["oracle"], case["candidate"])
     closed(sources, {"schema", "entries"}, "domain source manifest")
     if sources["schema"] != "bbr.domain-sources.v1":
         raise ReportError("unsupported domain source schema")
@@ -138,6 +162,22 @@ def recompute_domains(root: Path, sources: dict, *, files: dict[str, Path],
         summary = summarize_domain(registration, domain=domain, partitions=partitions,
             campaign_receipt=campaign_receipt, domain_policy=policy, binding=binding,
             expected_binding_sha256=expected_binding, observed_probes=observed, records=records)
+        if primary_observations is not None and records is not None:
+            from bbr.contracts import PairOutcome
+            from evaluation.producer import observation_row
+
+            # The sole producer already validated record identity/comparator
+            # integrity. This is a cross-source equality join, not another scorer.
+            for record in records:
+                key = tuple(record[name] for name in ("task_id", "model", "arm", "candidate_sha256", "stdin_hex"))
+                retained_primary = primary_observations.get(key)
+                if retained_primary is None:
+                    continue  # Public-only full-domain records need not be primary inputs.
+                pair = PairOutcome.model_validate_json(canonical(record["outcome"]))
+                observed = (observation_row(pair.binary), observation_row(pair.candidate))
+                if observed != retained_primary:
+                    raise ReportError("domain record contradicts retained primary observation")
+                checked_primary += 1
         if not isinstance(summary, dict) or summary.get("schema") != "bbr.domain-summary.v1":
             raise ReportError("domain producer returned an unsupported summary")
         canonical(summary)
@@ -147,5 +187,9 @@ def recompute_domains(root: Path, sources: dict, *, files: dict[str, Path],
             "source_recomputed": True, "summaries": summaries,
             "source_entries": [source_entries[path] for path in sorted(source_entries)],
             "expected_binding_sha256": binding_commitments,
+            "primary_observation_join": {
+                "status": "checked_retained_overlap" if primary_observations is not None else "not_supplied",
+                "checked_observations": checked_primary,
+                "reason": None if checked_primary else "No overlapping primary observations supplied; absent observations are not verified."},
             "population_rate": None, "population_rate_reason": "single-row events are not a population rate",
             "verification_scope": "retained consistency only; not execution, admission or custody authenticity"}
