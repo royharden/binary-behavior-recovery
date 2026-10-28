@@ -95,8 +95,12 @@ status, and invokes the canonical `agent-ports/scripts/ports.py check
 PROJECT/instance` using the explicitly configured Python. Nonzero, timeout or
 unknown refuses launch. A record with no ports can make that tool exit zero
 without live Docker checks, so it never replaces the mandatory live guard.
-Checks use bounded output and a five-second control deadline; a slow or busy
-machine refuses admission. The ports script can itself spawn bounded diagnostic
+Docker controls use bounded output and a five-second deadline. The canonical
+ports preflight has a separate bounded thirty-second control deadline because
+the observed read-only check takes about seventeen seconds on the current host.
+The subject/attach wall limit remains the frozen two seconds; no worker limit is
+extended by this preflight allowance. Any timeout still refuses admission. The
+ports script can itself spawn bounded diagnostic
 children; this adapter never kills unrelated processes to repair a slow check.
 
 ## Execution and observation

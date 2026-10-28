@@ -369,7 +369,7 @@ class DockerBackend:
         context = AdmissionContext(phase, config, path, request.artifact_sha256, container_id)
         self._verify_proof(config.admission_guard(context), phase)
         check = _capture((str(config.python_executable), str(PORTS_SCRIPT), "check",
-                          f"{config.project}/{config.instance}"), host_env={
+                          f"{config.project}/{config.instance}"), seconds=30.0, host_env={
                               "PATH": str(config.docker_executable.parent) + ";"
                               + str(Path(os.environ.get("SYSTEMROOT", r"C:\Windows")) / "System32"),
                               "DOCKER_HOST": "npipe:////./pipe/docker_engine",
