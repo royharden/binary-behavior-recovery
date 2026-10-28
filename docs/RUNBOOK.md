@@ -41,11 +41,15 @@ objects use producer contracts. The full evidence digest must match VisibleTask.
 Preflight constructs and validates the same producer `PublicEvidenceEnvelope` as
 extraction, retaining full inert content for the owned provider consumer. Structural
 checks do not prove ELF provenance, token budgets or semantic/canary leak absence.
+It uses the accepted provider `prepare_request` with the producer's public fixture
+`ModelConfig` default and complete canonical envelope, returning the exact request
+digest and byte count. This prepares data only: no reservation, fixture lookup,
+provider dispatch, hidden stream or model call follows. No live model is selected.
 The actual validator with no backend returns `None` (infrastructure unknown),
 while the actual runner with no backend retains its infrastructure observation.
 Neither binary nor candidate executes. Preflight exits 2 before provider dispatch,
-pending independent admission, isolated backends, the closed full-content evidence
-envelope and verified leak/token controls. Demo always prints
+pending independent admission, isolated backends and verified leak/token controls.
+Demo always prints
 **SCRIPTED FIXTURE / NO LIVE MODEL RESULT** and never invents observations.
 
 Later activation order:

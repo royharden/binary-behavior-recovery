@@ -6,7 +6,6 @@ No path in this module imports/compiles candidate source or launches a process.
 from __future__ import annotations
 
 from hashlib import sha256
-import importlib.util
 from pathlib import Path
 from typing import Any
 
@@ -127,12 +126,13 @@ def ledger_report(path: Path) -> tuple[dict, int]:
 def fixture_preflight(config_path: Path, arm: str) -> tuple[dict, int]:
     """Trace public source inputs and real fail-closed worker ports.
 
-    This preflight intentionally does not dispatch even scripted requests until
-    independent admission and the full public evidence envelope are integrated.
+    This preflight prepares an exact offline request but never dispatches it.
+    Independent admission and configured isolated workers remain prerequisites.
     Config data cannot nominate a Python module, backend or executable callback.
     """
     from bbr.contracts import ExecutionLimits, VisibleTask
     from bbr.evidence import PublicEvidenceEnvelope
+    from bbr.providers.mock import ModelConfig, prepare_request, request_digest
     from bbr.runner import CandidateValidator, Runner, SandboxPolicy
 
     raw = _closed(_json(config_path), {"schema", "origin", "artifact", "artifact_sha256",
@@ -152,6 +152,8 @@ def fixture_preflight(config_path: Path, arm: str) -> tuple[dict, int]:
         expected_artifact_sha256=raw["artifact_sha256"])
     envelope.validate_for(artifact_sha256=raw["artifact_sha256"],
                           evidence_sha256=task.evidence_sha256)
+    request = prepare_request(task, (), ModelConfig(),
+        evidence_json=envelope.canonical_json(), artifact_sha256=raw["artifact_sha256"])
     limits = ExecutionLimits.model_validate_json(canonical(raw["limits"]))
     oracle_policy = SandboxPolicy(raw["image_sha256"], raw["toolchain_sha256"], worker_kind="oracle")
     candidate_policy = SandboxPolicy(raw["image_sha256"], raw["toolchain_sha256"], worker_kind="candidate")
@@ -163,7 +165,6 @@ def fixture_preflight(config_path: Path, arm: str) -> tuple[dict, int]:
     # unknown; it cannot launch an oracle or consult hidden/source assets.
     unavailable = Runner(oracle_policy, backend=None).execute(
         bundle.artifact_sha256, task.examples[0].stdin_bytes, limits)
-    provider_present = importlib.util.find_spec("bbr.providers") is not None
     return {"status": "preflight_blocked", "origin": "fixture", "arm": arm,
             "live_status": "not_run", "runtime_validation": "unverified",
             "evidence_sha256": bundle.digest(), "evidence_bytes": len(bundle.canonical_json()),
@@ -174,9 +175,10 @@ def fixture_preflight(config_path: Path, arm: str) -> tuple[dict, int]:
             "candidate_validation": {"valid": valid, "diagnostic": diagnostic,
                 "status": "infrastructure_error" if valid is None else "subject_checked_failure"},
             "runner": unavailable.model_dump(mode="json"),
-            "provider_module_integrated": provider_present, "provider_dispatched": False,
+            "provider_module_integrated": True, "provider_dispatched": False,
+            "prepared_request_sha256": request_digest(request),
+            "prepared_request_bytes": len(canonical(request)),
             "pending": ["independent admission and custody authenticity",
                 "admitted isolated candidate/oracle backends",
-                "accepted provider consumer of full closed evidence envelope",
                 "verified pre-dispatch leak/token controls"],
-            "reason": "No request, binary or candidate execution was initiated."}, 2
+            "reason": "Exact offline request prepared; no provider dispatch or subject execution initiated."}, 2
