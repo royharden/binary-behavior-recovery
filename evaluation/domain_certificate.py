@@ -24,8 +24,11 @@ _SCOPE = "retained consistency only; not authentic custody or fresh execution"
 
 
 def _canonical(value: object) -> bytes:
-    return json.dumps(value, sort_keys=True, separators=(",", ":"),
-                      allow_nan=False).encode("utf-8")
+    try:
+        return json.dumps(value, sort_keys=True, separators=(",", ":"),
+                          allow_nan=False).encode("utf-8")
+    except (TypeError, RecursionError) as error:
+        raise ValueError("canonical JSON value required") from error
 
 
 def _name(value: object, label: str) -> str:
@@ -35,18 +38,24 @@ def _name(value: object, label: str) -> str:
     return value
 
 
-def _unavailable(reason: str, identity: dict | None = None) -> dict:
-    return {"schema": "bbr.domain-summary.v1", "status": "not_qualified", "reason": reason,
+def _unavailable(reason: str, identity: dict | None = None, *,
+                 unavailable_checks: list[str] | None = None) -> dict:
+    result = {"schema": "bbr.domain-summary.v1", "status": "not_qualified", "reason": reason,
             "identity": identity, "provenance": None, "certificate": None,
             "calibration": None, "verification_scope": _SCOPE}
+    if unavailable_checks is not None:
+        result["unavailable_checks"] = unavailable_checks
+    return result
 
 
 def _public_domain(raw: dict) -> Domain:
     closed(raw, {"width", "input_arity", "output_arity", "minimum", "maximum"}, "public Domain")
+    if any(type(value) is not int for value in raw.values()):
+        raise ValueError("strict integer public Domain fields required")
     return Domain.model_validate_json(_canonical(raw))
 
 
-def _policy(registration: Registration, policy: dict, rosters: dict) -> dict:
+def _policy(registration: Registration, policy: dict, rosters: dict | None) -> dict:
     closed(policy, {"schema", "tasks"}, "domain policy")
     if policy["schema"] != "bbr.domain-policy.v1" or type(policy["tasks"]) is not list:
         raise ValueError("domain policy schema/list required")
@@ -86,9 +95,12 @@ def _policy(registration: Registration, policy: dict, rosters: dict) -> dict:
                 raise ValueError("precommitted sample subset size mismatch")
             for key in keys:
                 _name(key, "sample canonical key")
-            private = {key for _, key in rosters[task]["private_valid"]}
-            if len(set(keys)) != len(keys) or not set(keys) <= private:
-                raise ValueError("sample repeats or escapes frozen private184")
+            if len(set(keys)) != len(keys):
+                raise ValueError("sample repeats canonical keys")
+            if rosters is not None:
+                private = {key for _, key in rosters[task]["private_valid"]}
+                if not set(keys) <= private:
+                    raise ValueError("sample escapes frozen private184")
             if cell.family_id in family_samples and family_samples[cell.family_id] != sample:
                 raise ValueError("variants changed precommitted sampling recipe/subset")
             family_samples[cell.family_id] = sample
@@ -96,6 +108,32 @@ def _policy(registration: Registration, policy: dict, rosters: dict) -> dict:
     if set(entries) != set(cells):
         raise ValueError("all frozen domain tasks required")
     return entries
+
+
+def _paired_identity(registration: Registration, source: dict, finals: dict | None,
+                     *, comparison: bool) -> tuple:
+    """Validate a present source against every available identity authority."""
+    for name in ("task_id", "model", "arm"):
+        _name(source[name], name)
+    require_digest(source["candidate_sha256"])
+    key = tuple(source[name] for name in ("task_id", "model", "arm"))
+    if key not in registration.final_keys:
+        raise ValueError("task/model/arm outside frozen registration")
+    cell = next(c for c in registration.cells if c.task_id == key[0])
+    if comparison:
+        require_digest(source["artifact_sha256"])
+        require_digest(source["execution_contract_sha256"])
+        if (source["artifact_sha256"] != cell.artifact_sha256 or
+                source["execution_contract_sha256"] != cell.execution_contract_sha256 or
+                source["comparator_version"] != COMPARATOR_VERSION):
+            raise ValueError("retained comparison differs from registered execution/comparator")
+    if finals is not None:
+        final = finals[key]
+        if final["status"] != "candidate":
+            raise ValueError("retained candidate claim conflicts with noncandidate final")
+        if source["candidate_sha256"] != final["candidate_sha256"]:
+            raise ValueError("retained candidate differs from locked final")
+    return key, cell
 
 
 def summarize_domain(registration: Registration, *, domain: Domain | None,
@@ -108,134 +146,198 @@ def summarize_domain(registration: Registration, *, domain: Domain | None,
     Missing truth yields null/not_qualified. Present malformed or conflicting
     supplied evidence raises ValueError. No sample is selected from outcomes.
     """
-    for value, reason in ((domain, "domain_truth_unavailable"),
-                          (partitions, "frozen_partitions_unavailable"),
-                          (campaign_receipt, "post_final_lock_receipt_unavailable"),
-                          (domain_policy, "domain_sampling_policy_unavailable"),
-                          (binding, "paired_identity_binding_unavailable"),
-                          (expected_binding_sha256, "trusted_binding_commitment_unavailable"),
-                          (observed_probes, "observed_probe_commitment_unavailable"),
-                          (records, "retained_records_unavailable")):
-        if value is None:
-            return _unavailable(reason)
-    if type(domain) is not Domain:
-        raise ValueError("exact public Domain required")
-    public_domain = _public_domain(domain.model_dump(mode="json"))
-    if (public_domain.maximum-public_domain.minimum+1) ** public_domain.input_arity != 256:
-        return _unavailable("not_exactly256_canonical_domain")
-    finals = validate_open_receipt(registration, campaign_receipt)
-    rosters = frozen_partitions(registration, partitions)
-    policy = _policy(registration, domain_policy, rosters)
-    closed(binding, {"schema"} | _IDENTITY | _COMPARISON | _PINS, "domain binding")
-    if binding["schema"] != "bbr.domain-binding.v1":
-        raise ValueError("unknown domain binding schema")
-    if digest(binding) != require_digest(expected_binding_sha256):
-        raise ValueError("domain binding differs from separate trusted commitment")
-    for field in ("task_id", "model", "arm"):
-        _name(binding[field], field)
-    for field in (_PINS | {"candidate_sha256", "artifact_sha256", "execution_contract_sha256"}):
-        require_digest(binding[field])
-    identity = {name: binding[name] for name in sorted(_IDENTITY)}
-    key = (binding["task_id"], binding["model"], binding["arm"])
-    final = finals.get(key)
-    if final is None:
-        raise ValueError("task/model/arm outside verified final locks")
-    if final["status"] != "candidate":
-        return _unavailable("locked_final_has_no_candidate", identity)
-    if binding["candidate_sha256"] != final["candidate_sha256"]:
-        raise ValueError("certificate candidate differs from locked final")
-    cell = next(c for c in registration.cells if c.task_id == key[0])
-    if cell.tier != "finite":
-        return _unavailable("registered_task_is_not_finite", identity)
-    entry = policy[key[0]]
-    if entry["domain"] is None:
-        return _unavailable("frozen_domain_truth_unavailable", identity)
-    if entry["domain"] != public_domain.model_dump(mode="json"):
-        raise ValueError("caller Domain differs from precommitted public Domain")
-    expected = {"artifact_sha256": cell.artifact_sha256,
-                "execution_contract_sha256": cell.execution_contract_sha256,
-                "comparator_version": COMPARATOR_VERSION,
-                "registration_sha256": registration.sha256,
-                "lock_sha256": campaign_receipt["lock_sha256"],
+    sources = ((domain, "domain_truth_unavailable"),
+               (partitions, "frozen_partitions_unavailable"),
+               (campaign_receipt, "post_final_lock_receipt_unavailable"),
+               (domain_policy, "domain_sampling_policy_unavailable"),
+               (binding, "paired_identity_binding_unavailable"),
+               (expected_binding_sha256, "trusted_binding_commitment_unavailable"),
+               (observed_probes, "observed_probe_commitment_unavailable"),
+               (records, "retained_records_unavailable"))
+    # Validate present sources BEFORE any unavailable result. Missing dependencies
+    # disable only their joins, never unrelated local or retained-byte checks.
+    if type(registration) is not Registration:
+        raise ValueError("exact Registration required")
+    registration.validate()
+    public_domain = None
+    if domain is not None:
+        if type(domain) is not Domain:
+            raise ValueError("exact public Domain required")
+        public_domain = _public_domain(domain.model_dump(mode="json"))
+    finals = validate_open_receipt(registration, campaign_receipt) if campaign_receipt is not None else None
+    rosters = frozen_partitions(registration, partitions) if partitions is not None else None
+    policy = _policy(registration, domain_policy, rosters) if domain_policy is not None else None
+    if expected_binding_sha256 is not None:
+        require_digest(expected_binding_sha256)
+    target = None
+    key = cell = None
+    expected = {"registration_sha256": registration.sha256,
                 "partition_sha256": dict(registration.pins)["partitions"],
-                "domain_policy_sha256": dict(registration.pins)["domain_policy"],
-                "canonical_plan_sha256": entry["canonical_plan_sha256"],
-                "observed_probes_sha256": digest(observed_probes)}
-    if any(binding[name] != pin for name, pin in expected.items()):
-        raise ValueError("certificate comparison/policy/partition/lock pins mismatch")
-    roster = rosters[key[0]]
-    valid = {raw: canonical for name in ("visible", "public_valid", "private_valid")
-             for raw, canonical in roster[name]}
-    if len(valid) != 256:
-        raise ValueError("frozen full canonical roster must have256 values")
+                "domain_policy_sha256": dict(registration.pins)["domain_policy"]}
+    if campaign_receipt is not None:
+        expected["lock_sha256"] = campaign_receipt["lock_sha256"]
+    if binding is not None:
+        closed(binding, {"schema"} | _IDENTITY | _COMPARISON | _PINS, "domain binding")
+        if binding["schema"] != "bbr.domain-binding.v1":
+            raise ValueError("unknown domain binding schema")
+        key, cell = _paired_identity(registration, binding, finals, comparison=True)
+        for field in _PINS:
+            require_digest(binding[field])
+        if expected_binding_sha256 is not None and digest(binding) != expected_binding_sha256:
+            raise ValueError("domain binding differs from separate trusted commitment")
+        target = binding
+    probes = []
+    if observed_probes is not None:
+        closed(observed_probes, {"schema"} | _IDENTITY | {"lock_sha256", "public_input_hex"}, "observed probes")
+        if observed_probes["schema"] != "bbr.observed-probes.v1":
+            raise ValueError("unknown observed probe schema")
+        probe_key, probe_cell = _paired_identity(registration, observed_probes, finals, comparison=False)
+        require_digest(observed_probes["lock_sha256"])
+        if campaign_receipt is not None and observed_probes["lock_sha256"] != campaign_receipt["lock_sha256"]:
+            raise ValueError("observed probe lock mismatch")
+        if target is not None and any(observed_probes[n] != target[n] for n in _IDENTITY | {"lock_sha256"}):
+            raise ValueError("observed probe identity/lock mismatch")
+        if target is None:
+            target, key, cell = observed_probes, probe_key, probe_cell
+        probes = observed_probes["public_input_hex"]
+        if type(probes) is not list or len(probes) > 48:
+            raise ValueError("bounded observed-probe list required")
+        for raw in probes:
+            canonical_hex(raw, 64)
+        if len(set(probes)) != len(probes):
+            raise ValueError("observed probes repeat")
+        if probe_key[2] != "P" and probes:
+            raise ValueError("non-probing arm cannot claim public observations")
+        expected["observed_probes_sha256"] = digest(observed_probes)
+    retained, raw_seen = [], set()
+    if records is not None:
+        if type(records) is not list or len(records) != 256:
+            raise ValueError("exactly256 retained canonical comparisons required")
+        for record in records:
+            closed(record, _IDENTITY | _COMPARISON | {"stdin_hex", "outcome"}, "domain comparison")
+            record_key, record_cell = _paired_identity(registration, record, finals, comparison=True)
+            if target is not None and any(record[n] != target[n] for n in _IDENTITY):
+                raise ValueError("retained comparison changes paired candidate identity")
+            if target is None:
+                target, key, cell = record, record_key, record_cell
+            raw_hex = canonical_hex(record["stdin_hex"], 64)
+            if raw_hex in raw_seen:
+                raise ValueError("repeated retained canonical input")
+            raw_seen.add(raw_hex)
+            raw = bytes.fromhex(raw_hex)
+            if type(record["outcome"]) is not dict:
+                raise ValueError("shared PairOutcome JSON object required")
+            pair = PairOutcome.model_validate_json(_canonical(record["outcome"]))
+            if pair.input_sha256 != sha256(raw).hexdigest():
+                raise ValueError("retained pair input digest mismatch")
+            recomputed = compare_observations(pair.binary, pair.candidate, stdin_bytes=raw)
+            if (pair.status, pair.reason) != (recomputed.status, recomputed.reason):
+                raise ValueError("retained comparator status/reason drift")
+            retained.append((raw_hex, pair))
+        expected["records_sha256"] = digest(records)
+    identity = {name: target[name] for name in sorted(_IDENTITY)} if target is not None else None
+    entry = policy[key[0]] if policy is not None and key is not None else None
+    if cell is not None:
+        expected.update(artifact_sha256=cell.artifact_sha256,
+                        execution_contract_sha256=cell.execution_contract_sha256,
+                        comparator_version=COMPARATOR_VERSION)
+    if entry is not None:
+        expected["canonical_plan_sha256"] = entry["canonical_plan_sha256"]
+        if (entry["domain"] is not None and public_domain is not None and
+                entry["domain"] != public_domain.model_dump(mode="json")):
+            raise ValueError("caller Domain differs from precommitted public Domain")
+    # A present committed policy can validate retained inputs without fabricating
+    # the separately required caller Domain or qualifying a partial result.
+    validation_domain = public_domain
+    if validation_domain is None and entry is not None and entry["domain"] is not None:
+        validation_domain = _public_domain(entry["domain"])
+    if binding is not None and any(binding[name] != pin for name, pin in expected.items()):
+        raise ValueError("certificate comparison/policy/partition/lock/record pins mismatch")
+    roster = rosters[key[0]] if rosters is not None and key is not None else None
+    valid = None
+    if roster is not None:
+        valid = {raw: canonical for name in ("visible", "public_valid", "private_valid")
+                 for raw, canonical in roster[name]}
+        if cell.tier == "finite" and len(valid) != 256:
+            raise ValueError("frozen full canonical roster must have256 values")
+        if records is not None and raw_seen != set(valid):
+            raise ValueError("missing/outside-frozen retained canonical comparison")
+        if observed_probes is not None:
+            allowed_public = {raw for name in ("public_valid", "public_malformed") for raw, _ in roster[name]}
+            if not set(probes) <= allowed_public:
+                raise ValueError("observed probes escape frozen public pool")
 
     def decode_input(raw: bytes) -> tuple[int, ...]:
-        values = decode(raw, cell.codec, public_domain.width)
-        if (len(values) != public_domain.input_arity or
-                any(not public_domain.minimum <= v <= public_domain.maximum for v in values) or
-                encode(values, cell.codec, public_domain.width) != raw):
+        values = decode(raw, cell.codec, validation_domain.width)
+        if (len(values) != validation_domain.input_arity or
+                any(not validation_domain.minimum <= v <= validation_domain.maximum for v in values) or
+                encode(values, cell.codec, validation_domain.width) != raw):
             raise ValueError("retained input outside canonical public Domain")
         return values
 
-    # Count supplied decoded values; NEVER enumerate the declared domain. Exactly
-    #256 distinct in-range values in a256-capacity domain proves declared coverage.
-    decoded = {decode_input(bytes.fromhex(raw)) for raw in valid}
-    if len(decoded) != 256:
-        raise ValueError("frozen raw/canonical roster does not cover declared Domain")
-    closed(observed_probes, {"schema"} | _IDENTITY | {"lock_sha256", "public_input_hex"}, "observed probes")
-    if (observed_probes["schema"] != "bbr.observed-probes.v1" or
-            any(observed_probes[n] != binding[n] for n in _IDENTITY | {"lock_sha256"})):
-        raise ValueError("observed probe identity/lock mismatch")
-    probes = observed_probes["public_input_hex"]
-    if type(probes) is not list or len(probes) > 48:
-        raise ValueError("bounded observed-probe list required")
-    for raw in probes:
-        canonical_hex(raw, 64)
-    allowed_public = {raw for name in ("public_valid", "public_malformed") for raw, _ in roster[name]}
-    if len(set(probes)) != len(probes) or not set(probes) <= allowed_public:
-        raise ValueError("observed probes repeat or escape frozen public pool")
-    if key[2] != "P" and probes:
-        raise ValueError("non-probing arm cannot claim public observations")
+    if validation_domain is not None and cell is not None:
+        for raw_hex, _ in retained:
+            decode_input(bytes.fromhex(raw_hex))
+        if valid is not None:
+            # Count supplied values only; NEVER enumerate the declared domain.
+            decoded = {decode_input(bytes.fromhex(raw)) for raw in valid}
+            if len(decoded) != len(valid):
+                raise ValueError("frozen raw roster repeats decoded canonical values")
+    oracle_ok_by_input = {}
+    for raw_hex, pair in retained:
+        oracle_ok = pair.binary.status == "ok" and pair.binary.exit_code == 0
+        if validation_domain is not None and cell is not None:
+            try:
+                outputs = decode(pair.binary.stdout_bytes, cell.codec, validation_domain.width,
+                                 max_elements=validation_domain.output_arity)
+                oracle_ok &= len(outputs) == validation_domain.output_arity
+            except ValueError:
+                oracle_ok = False
+        oracle_ok_by_input[raw_hex] = oracle_ok
+    missing = [reason for value, reason in sources if value is None]
+    if missing:
+        unavailable_checks = []
+        if domain is None:
+            unavailable_checks.append("caller-supplied Domain validation and commitment equality")
+        if validation_domain is None:
+            unavailable_checks.append("Domain-dependent input decoding, coverage and oracle-output arity")
+        if partitions is None:
+            unavailable_checks.append("record/probe pool membership, canonical coverage and private sample membership")
+        if campaign_receipt is None:
+            unavailable_checks.append("post-final-lock candidate and lock-receipt joins")
+        if domain_policy is None:
+            unavailable_checks.append("target precommitted Domain and canonical-plan/sample-policy joins")
+        if binding is None:
+            unavailable_checks.append("binding body and its source-commitment joins")
+        if binding is None or expected_binding_sha256 is None:
+            unavailable_checks.append("binding against separate trusted commitment")
+        if observed_probes is None:
+            unavailable_checks.append("observed-probe identity, pool membership and binding digest join")
+        if records is None:
+            unavailable_checks.append("retained comparison identity, input/comparator checks and binding digest join")
+        if target is None:
+            unavailable_checks.append("target-specific Domain, partition and policy joins; no paired identity available")
+        unavailable_checks.append("certificate/calibration qualification and agreement; required source set incomplete")
+        return _unavailable(missing[0], identity, unavailable_checks=unavailable_checks)
+    if (public_domain.maximum-public_domain.minimum+1) ** public_domain.input_arity != 256:
+        return _unavailable("not_exactly256_canonical_domain")
+    if cell.tier != "finite":
+        return _unavailable("registered_task_is_not_finite", identity)
+    if entry["domain"] is None:
+        return _unavailable("frozen_domain_truth_unavailable", identity)
     public_keys = {canonical for _, canonical in roster["public_valid"]}
     observed_keys = {valid[raw] for raw in probes if raw in valid}
     private_keys = {canonical for _, canonical in roster["private_valid"]}
-    if type(records) is not list or len(records) != 256:
-        raise ValueError("exactly256 retained canonical comparisons required")
-    results, raw_seen = {}, set()
+    results = {}
     unknown_count, oracle_invalid_count = 0, 0
-    for record in records:
-        closed(record, _IDENTITY | _COMPARISON | {"stdin_hex", "outcome"}, "domain comparison")
-        if any(record[name] != binding[name] for name in _IDENTITY | _COMPARISON):
-            raise ValueError("retained comparison changes paired candidate/execution identity")
-        raw_hex = canonical_hex(record["stdin_hex"], 64)
-        if raw_hex not in valid or raw_hex in raw_seen:
-            raise ValueError("repeated/outside-frozen retained canonical input")
-        raw_seen.add(raw_hex)
-        raw = bytes.fromhex(raw_hex)
-        decode_input(raw)
-        if type(record["outcome"]) is not dict:
-            raise ValueError("shared PairOutcome JSON object required")
-        pair = PairOutcome.model_validate_json(_canonical(record["outcome"]))
-        if pair.input_sha256 != sha256(raw).hexdigest():
-            raise ValueError("retained pair input digest mismatch")
-        recomputed = compare_observations(pair.binary, pair.candidate, stdin_bytes=raw)
-        if (pair.status, pair.reason) != (recomputed.status, recomputed.reason):
-            raise ValueError("retained comparator status/reason drift")
-        oracle_ok = pair.binary.status == "ok" and pair.binary.exit_code == 0
-        try:
-            outputs = decode(pair.binary.stdout_bytes, cell.codec, public_domain.width,
-                             max_elements=public_domain.output_arity)
-            oracle_ok &= len(outputs) == public_domain.output_arity
-        except ValueError:
-            oracle_ok = False
+    for raw_hex, pair in retained:
+        oracle_ok = oracle_ok_by_input[raw_hex]
         unknown = pair.status == "infrastructure_error"
         unknown_count += unknown
         oracle_invalid_count += not oracle_ok
         results[valid[raw_hex]] = pair.status == "equal" and oracle_ok and not unknown
-    if raw_seen != set(valid) or len(results) != 256:
+    if len(results) != 256:
         raise ValueError("missing/repeated canonical retained comparison")
-    if digest(records) != binding["records_sha256"]:
-        raise ValueError("retained comparisons differ from bound commitment")
     qualified = not unknown_count and not oracle_invalid_count
     exhaustive = all(results.values()) if qualified else None
     private_agreement = all(results[k] for k in private_keys) if qualified else None
