@@ -99,7 +99,8 @@ class Registration:
         required = {"engine", "scorer", "baselines", "prompts", "wrappers", "generators", "domain_policy", "resources", "prices", "schedule", "partitions", "source", "canaries"}
         if not isinstance(self.pins, tuple) or any(not isinstance(p, tuple) or len(p) != 2 or not isinstance(p[0], str) for p in self.pins):
             raise ValueError("pin name/digest pairs required")
-        if len(dict(self.pins)) != len(self.pins) or set(dict(self.pins)) != required:
+        names = set(dict(self.pins))
+        if len(dict(self.pins)) != len(self.pins) or names not in (required, required | {"model_bindings"}):
             raise ValueError("closed preregistration pin set required")
         for _, value in self.pins:
             require_digest(value)
