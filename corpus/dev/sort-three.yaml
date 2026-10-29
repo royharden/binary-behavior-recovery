@@ -1,0 +1,14 @@
+{
+  "family_id": "sort-three",
+  "split": "dev",
+  "width": 16,
+  "input_arity": 3,
+  "output_arity": 3,
+  "minimum": 0,
+  "maximum": 65535,
+  "semantic_fingerprint": "sort3(compare-swap(0,1);(1,2);(0,1))",
+  "finite_domain_size": null,
+  "author": "0934_Codex_gpt-61-sol_Sub_M15Corpus",
+  "created": "2026-10-27",
+  "rights_status": "pending"
+}

@@ -1,0 +1,14 @@
+{
+  "family_id": "rolling-four",
+  "split": "dev",
+  "width": 16,
+  "input_arity": 4,
+  "output_arity": 1,
+  "minimum": 0,
+  "maximum": 65535,
+  "semantic_fingerprint": "fold(state=7;state=mod65536(state*33+x))",
+  "finite_domain_size": null,
+  "author": "0934_Codex_gpt-61-sol_Sub_M15Corpus",
+  "created": "2026-10-27",
+  "rights_status": "pending"
+}
